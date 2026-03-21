@@ -242,8 +242,4 @@ Make sure the Cloud Run service account has `Compute Admin` and `TPU Admin` role
 
 **Mohammad Ghodratigohar** — [emgi@google.com](mailto:emgi@google.com)
 
----
 
-## 📄 License
-
-This project is provided as-is for use by Google Cloud customers. See your Google Cloud agreement for terms of use.
