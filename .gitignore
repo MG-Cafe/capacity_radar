@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+*.egg
+.env
+*.log
+venv/
+.venv/
+
+# Node
+node_modules/
+npm-debug.log*
+
+# Frontend build (rebuilt on deploy)
+frontend/dist/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+/tmp/
+*.log
