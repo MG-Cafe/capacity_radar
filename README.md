@@ -240,7 +240,7 @@ Make sure the Cloud Run service account has `Compute Admin` and `TPU Admin` role
 
 ## 👤 Creator
 
-**Emad Girgis** — [emgi@google.com](mailto:emgi@google.com)
+**Mohammad Ghodratigohar** — [emgi@google.com](mailto:emgi@google.com)
 
 ---
 
