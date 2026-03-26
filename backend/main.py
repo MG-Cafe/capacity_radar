@@ -21,9 +21,15 @@ from hunter import (
     active_sessions, ConsumptionModel, ScanningStatus,
 )
 
+import os as _os
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Cloud Run / Demo mode configuration
+DEMO_MODE = _os.environ.get("DEMO_MODE", "false").lower() in ("true", "1", "yes")
+DEFAULT_PROJECT = _os.environ.get("DEFAULT_PROJECT", "northam-ce-mlai-tpu")
 
 app = FastAPI(
     title="GPU Radar",
@@ -32,7 +38,6 @@ app = FastAPI(
 )
 
 # CORS for frontend dev server
-import os as _os
 _cors_origins = _os.environ.get(
     "CORS_ORIGINS",
     "http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173,http://127.0.0.1:3000"
@@ -90,6 +95,16 @@ class ScanRequest(BaseModel):
 
 
 # --- REST Endpoints ---
+
+@app.get("/api/config")
+async def get_config():
+    """Return app configuration including demo mode status."""
+    return {
+        "demoMode": DEMO_MODE,
+        "project": DEFAULT_PROJECT if DEMO_MODE else "",
+        "repoUrl": "https://github.com/MG-Cafe/capacity_radar",
+    }
+
 
 @app.post("/api/auth/check")
 async def check_auth(body: dict = None):
@@ -396,6 +411,31 @@ async def websocket_scan(websocket: WebSocket):
                     "sessionId": session.session_id,
                     "message": f"Session created: {session.session_id}",
                 })
+
+                # DEMO MODE: Block actual GPU deployment
+                if DEMO_MODE:
+                    from datetime import datetime, timezone as tz
+                    ts = datetime.now(tz.utc).isoformat()
+                    methods_str = ", ".join(p["method"] for p in priorities)
+                    zones_str = ", ".join(priorities[0]["zones"][:3]) if priorities and priorities[0].get("zones") else "N/A"
+                    for msg_data in [
+                        {"type": "info", "message": f"📋 Configuration validated: {scan_req.vmCount}x {scan_req.machineType}"},
+                        {"type": "info", "message": f"📋 Methods: {methods_str} | Zones: {zones_str}..."},
+                        {"type": "info", "message": "⚠️ This is a hosted demo version of Capacity Radar."},
+                        {"type": "info", "message": "🚫 Due to cost and capacity constraints, actual GPU/TPU deployment is disabled in this version."},
+                        {"type": "info", "message": "💡 To enable full scanning & deployment:"},
+                        {"type": "info", "message": "   1. Clone the repo: git clone https://github.com/MG-Cafe/capacity_radar.git"},
+                        {"type": "info", "message": "   2. Authenticate: gcloud auth application-default login"},
+                        {"type": "info", "message": "   3. Run locally: cd backend && python3 main.py"},
+                        {"type": "info", "message": "   4. Open http://localhost:8000 and configure your GCP project"},
+                        {"type": "info", "message": "📊 The Advisory tab (capacity checks) is fully functional in this demo!"},
+                        {"type": "failed", "message": "🛑 Scan stopped — deployment disabled in demo mode.", "status": "failed"},
+                    ]:
+                        msg_data["sessionId"] = session.session_id
+                        msg_data["timestamp"] = ts
+                        await websocket.send_json(msg_data)
+                        await asyncio.sleep(0.3)
+                    continue
 
                 # Run hunting as background task so cancel messages can be received
                 parallel = message.get("config", {}).get("parallel", False)

@@ -47,18 +47,31 @@ export default function App() {
   const [loginSuccess, setLoginSuccess] = useState(false)
   const [loginError, setLoginError] = useState(null)
   const [drawerOpen, setDrawerOpen] = useState(true)
+  const [demoMode, setDemoMode] = useState(false)
+  const [repoUrl, setRepoUrl] = useState('')
 
   useEffect(() => {
-    fetch('/api/machine-types')
-      .then(r => r.json())
-      .then(data => {
-        setMachineTypes(data.machineTypes || [])
-        setLoading(false)
-      })
-      .catch(err => {
-        console.error('Failed to fetch machine types:', err)
-        setLoading(false)
-      })
+    // Fetch config and machine types in parallel
+    Promise.all([
+      fetch('/api/config').then(r => r.json()).catch(() => ({ demoMode: false })),
+      fetch('/api/machine-types').then(r => r.json()).catch(() => ({ machineTypes: [] })),
+    ]).then(([config, mtData]) => {
+      setMachineTypes(mtData.machineTypes || [])
+      setLoading(false)
+      if (config.demoMode) {
+        setDemoMode(true)
+        setRepoUrl(config.repoUrl || '')
+        setProject(config.project)
+        setDrawerOpen(false)
+        setAuthStatus({
+          authenticated: true,
+          projectValid: true,
+          computeApiEnabled: true,
+          account: 'Cloud Run Service Account',
+        })
+        setLoginSuccess(true)
+      }
+    })
   }, [])
 
   const checkAuth = useCallback(async () => {
@@ -133,16 +146,22 @@ export default function App() {
             </Typography>
           </Box>
           <Box sx={{ flexGrow: 1 }} />
+          {demoMode && (
+            <Chip label="☁️ Demo Mode" size="small"
+              sx={{ height: 24, fontSize: '0.68rem', bgcolor: '#e8f0fe', color: '#1a73e8', fontWeight: 600, mr: 1 }} />
+          )}
           {isReady ? (
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-              <Chip
-                icon={<CheckCircleIcon sx={{ fontSize: 14 }} />}
-                label={authStatus.account}
-                size="small"
-                color="success"
-                variant="outlined"
-                sx={{ height: 26, fontSize: '0.72rem' }}
-              />
+              {!demoMode && (
+                <Chip
+                  icon={<CheckCircleIcon sx={{ fontSize: 14 }} />}
+                  label={authStatus.account}
+                  size="small"
+                  color="success"
+                  variant="outlined"
+                  sx={{ height: 26, fontSize: '0.72rem' }}
+                />
+              )}
               <Chip
                 icon={<CloudIcon sx={{ fontSize: 14 }} />}
                 label={project}
