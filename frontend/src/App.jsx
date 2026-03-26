@@ -151,8 +151,8 @@ export default function App() {
           </Box>
           <Box sx={{ flexGrow: 1 }} />
           {demoMode && (
-            <Chip label="☁️ Demo Mode" size="small"
-              sx={{ height: 24, fontSize: '0.68rem', bgcolor: '#e8f0fe', color: '#1a73e8', fontWeight: 600, mr: 1 }} />
+            <Chip label="☁️ Demo Mode" size="small" onClick={() => setDemoDialogOpen(true)}
+              sx={{ height: 24, fontSize: '0.68rem', bgcolor: '#e8f0fe', color: '#1a73e8', fontWeight: 600, mr: 1, cursor: 'pointer', '&:hover': { bgcolor: '#d2e3fc' } }} />
           )}
           {isReady ? (
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
