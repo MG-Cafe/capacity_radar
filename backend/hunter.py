@@ -795,6 +795,26 @@ class ScanningSession:
             await self.emit("warning", f"⚠️ Timeout creating DWS Flex future reservation in {zone}")
             return False
 
+    async def _get_network(self, token: str) -> str:
+        """Get the first available VPC network for this project."""
+        if hasattr(self, '_cached_network'):
+            return self._cached_network
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.get(
+                    f"https://compute.googleapis.com/compute/v1/projects/{self.project}/global/networks",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                if resp.status_code == 200:
+                    networks = resp.json().get("items", [])
+                    if networks:
+                        self._cached_network = networks[0]["selfLink"]
+                        return self._cached_network
+        except Exception:
+            pass
+        self._cached_network = f"projects/{self.project}/global/networks/default"
+        return self._cached_network
+
     async def _try_spot_rest(self, zone: str, name_prefix: str = "") -> bool:
         """Create Spot VM and poll operation to verify it's truly running."""
         inst_name = self._make_name(name_prefix, "spot", zone)
@@ -805,6 +825,7 @@ class ScanningSession:
         url = (f"https://compute.googleapis.com/compute/v1/projects/{self.project}"
                f"/zones/{zone}/instances")
         machine_info = MACHINE_TYPES.get(self.machine_type, {})
+        network = await self._get_network(token)
 
         body = {
             "name": inst_name,
@@ -819,7 +840,7 @@ class ScanningSession:
                            "sourceImage": "projects/debian-cloud/global/images/family/debian-11",
                            "diskSizeGb": "50"}}],
             "networkInterfaces": [{
-                "network": f"projects/{self.project}/global/networks/default",
+                "network": network,
                 "accessConfigs": [{"type": "ONE_TO_ONE_NAT", "name": "External NAT"}]
             }],
         }
