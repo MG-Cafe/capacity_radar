@@ -157,23 +157,24 @@ export default function App() {
           {isReady ? (
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
               {!demoMode && (
-                <Chip
-                  icon={<CheckCircleIcon sx={{ fontSize: 14 }} />}
-                  label={authStatus.account}
-                  size="small"
-                  color="success"
-                  variant="outlined"
-                  sx={{ height: 26, fontSize: '0.72rem' }}
-                />
+                <>
+                  <Chip
+                    icon={<CheckCircleIcon sx={{ fontSize: 14 }} />}
+                    label={authStatus.account}
+                    size="small"
+                    color="success"
+                    variant="outlined"
+                    sx={{ height: 26, fontSize: '0.72rem' }}
+                  />
+                  <Chip
+                    icon={<CloudIcon sx={{ fontSize: 14 }} />}
+                    label={project}
+                    size="small"
+                    variant="outlined"
+                    sx={{ height: 26, fontSize: '0.72rem', fontWeight: 500 }}
+                  />
+                </>
               )}
-              <Chip
-                icon={<CloudIcon sx={{ fontSize: 14 }} />}
-                label={project}
-                size="small"
-                variant="outlined"
-                onClick={demoMode ? () => setDemoDialogOpen(true) : undefined}
-                sx={{ height: 26, fontSize: '0.72rem', fontWeight: 500, cursor: demoMode ? 'pointer' : 'default' }}
-              />
             </Box>
           ) : (
             <Chip
