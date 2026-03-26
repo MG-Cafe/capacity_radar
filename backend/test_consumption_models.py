@@ -16,8 +16,8 @@ PROJECT = sys.argv[1] if len(sys.argv) > 1 else "northam-ce-mlai-tpu"
 
 # One representative machine type per family + one zone
 TEST_CASES = [
-    {"family": "A4X Max", "mt": "a4x-megagpu-8g",  "zone": "us-central1-b"},
-    {"family": "A4X",     "mt": "a4x-highgpu-8g",  "zone": "us-central1-a"},
+    {"family": "A4X Max", "mt": "a4x-maxgpu-4g-metal",  "zone": "us-central1-b"},
+    {"family": "A4X",     "mt": "a4x-highgpu-4g",  "zone": "us-central1-a"},
     {"family": "A4",      "mt": "a4-highgpu-8g",   "zone": "us-east4-b"},
     {"family": "A3 Ultra","mt": "a3-ultragpu-8g",  "zone": "us-central1-b"},
     {"family": "A3 Mega", "mt": "a3-megagpu-8g",   "zone": "us-central1-a"},

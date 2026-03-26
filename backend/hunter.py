@@ -672,12 +672,23 @@ class ScanningSession:
             f"{poll_num * poll_interval}s. Check GCP Console.")
         return False
 
+    def _family_supports_on_demand(self) -> bool:
+        """Check if the current machine type's family supports on-demand reservations."""
+        from gpu_data import CONSUMPTION_SUPPORT
+        family = MACHINE_TO_FAMILY.get(self.machine_type, "")
+        return CONSUMPTION_SUPPORT.get("on_demand", {}).get(family, False)
+
     async def _try_dws_flex_rest(self, zone: str, name_prefix: str = "",
                                   flex_max_wait_hours: int = 168,
                                   flex_usage_duration_hours: int = 24) -> bool:
-        """GPU DWS Flex: Try to create a reservation. The Compute Engine API doesn't
-        have a real queue — it either succeeds or fails immediately with 'no capacity'.
-        The outer retry loop in _scan_with_method handles retries."""
+        """GPU DWS Flex: For families that support on-demand reservations, try a standard
+        reservation with auto-delete. For families that don't (A4, A3 Ultra, A4X Max),
+        use future reservations which is the proper DWS Flex mechanism."""
+        # Families without on-demand support need future reservations for DWS Flex
+        if not self._family_supports_on_demand():
+            return await self._try_dws_flex_via_future(
+                zone, name_prefix, flex_usage_duration_hours=flex_usage_duration_hours)
+
         res_name = self._make_name(name_prefix, "flex", zone)
         token = await self._get_token()
 
@@ -716,11 +727,13 @@ class ScanningSession:
                     return False
                 else:
                     err_msg = self._parse_api_error(data)
-                    if "not supported" in err_msg.lower() and "on-demand" in err_msg.lower():
-                        await self.emit("warning",
-                            f"⚠️ DWS Flex not supported for {self.machine_type}. "
-                            f"Skipping to next priority.")
-                        return False
+                    # If standard reservation fails, fall back to future reservation approach
+                    if "not supported" in err_msg.lower() or "not available" in err_msg.lower():
+                        await self.emit("info",
+                            f"📋 Standard reservation not available in {zone}, "
+                            f"trying future reservation approach...")
+                        return await self._try_dws_flex_via_future(
+                            zone, name_prefix, flex_usage_duration_hours=flex_usage_duration_hours)
                     await self.emit("warning",
                         f"⚠️ [DWS Flex] {zone}: {err_msg}")
                     return False
@@ -728,13 +741,16 @@ class ScanningSession:
             await self.emit("warning", f"⚠️ Timeout creating DWS Flex in {zone}")
             return False
 
-    async def _try_dws_flex_via_future(self, zone: str, name_prefix: str = "") -> bool:
-        """Fallback: create a future reservation with short-term window as flex-like approach."""
+    async def _try_dws_flex_via_future(self, zone: str, name_prefix: str = "",
+                                       flex_usage_duration_hours: int = 0) -> bool:
+        """Create a future reservation for DWS Flex — the proper mechanism for families
+        that don't support on-demand reservations (A4, A3 Ultra, A4X Max)."""
         res_name = self._make_name(name_prefix, "flex-fr", zone)
         token = await self._get_token()
 
+        usage_hours = flex_usage_duration_hours if flex_usage_duration_hours > 0 else self.dws_calendar_duration_hours
         start_time = datetime.now(timezone.utc) + timedelta(minutes=5)
-        end_time = start_time + timedelta(hours=self.dws_calendar_duration_hours)
+        end_time = start_time + timedelta(hours=usage_hours)
         start_str = start_time.strftime("%Y-%m-%dT%H:%M:%SZ")
         end_str = end_time.strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -815,65 +831,118 @@ class ScanningSession:
         self._cached_network = f"projects/{self.project}/global/networks/default"
         return self._cached_network
 
+    def _is_accelerator_optimized(self) -> bool:
+        """Check if machine type is an accelerator-optimized family (A3/A4/A4X).
+        These have GPUs integrated — no guestAccelerators needed, require GVNIC."""
+        family = MACHINE_TO_FAMILY.get(self.machine_type, "")
+        return family.startswith(("A3", "A4"))
+
     async def _try_spot_rest(self, zone: str, name_prefix: str = "") -> bool:
-        """Create Spot VM and poll operation to verify it's truly running."""
-        inst_name = self._make_name(name_prefix, "spot", zone)
+        """Create Spot VM(s) and poll operation to verify. Creates vm_count instances
+        for accelerator-optimized families, or 1 instance for standard GPU types."""
         token = await self._get_token()
-
-        await self.emit("action", f"📡 Creating Spot VM '{inst_name}' in {zone}...")
-
-        url = (f"https://compute.googleapis.com/compute/v1/projects/{self.project}"
-               f"/zones/{zone}/instances")
         machine_info = MACHINE_TYPES.get(self.machine_type, {})
         network = await self._get_network(token)
+        is_accel_opt = self._is_accelerator_optimized()
 
-        body = {
-            "name": inst_name,
-            "machineType": f"zones/{zone}/machineTypes/{self.machine_type}",
-            "scheduling": {
-                "provisioningModel": "SPOT",
-                "instanceTerminationAction": "STOP",
-                "automaticRestart": False,
-            },
-            "disks": [{"boot": True, "autoDelete": True,
-                       "initializeParams": {
-                           "sourceImage": "projects/debian-cloud/global/images/family/debian-11",
-                           "diskSizeGb": "50"}}],
-            "networkInterfaces": [{
-                "network": network,
-                "accessConfigs": [{"type": "ONE_TO_ONE_NAT", "name": "External NAT"}]
-            }],
-        }
+        # Accelerator-optimized families (A3/A4) have specific requirements
+        spot_count = self.vm_count if is_accel_opt else 1
 
-        if machine_info.get("accelerator_type"):
-            body["guestAccelerators"] = [{
-                "acceleratorType": f"zones/{zone}/acceleratorTypes/{machine_info['accelerator_type']}",
-                "acceleratorCount": machine_info["gpu_count"],
-            }]
-            body["scheduling"]["onHostMaintenance"] = "TERMINATE"
+        created = []
+        for i in range(spot_count):
+            if self.cancelled:
+                return False
+            suffix = f"-{i}" if spot_count > 1 else ""
+            inst_name = self._make_name(name_prefix, f"spot{suffix}", zone)
 
-        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+            await self.emit("action",
+                f"📡 Creating Spot VM '{inst_name}' in {zone}"
+                f"{f' ({i+1}/{spot_count})' if spot_count > 1 else ''}...")
 
-        try:
-            async with httpx.AsyncClient(timeout=120) as client:
-                resp = await client.post(url, json=body, headers=headers)
-                data = resp.json()
-                if resp.status_code in (200, 201):
-                    verified = await self._wait_for_operation(data, zone, "Spot VM")
-                    if verified:
-                        self.result = {"method": "spot", "instance_name": inst_name,
-                                       "zone": zone, "vm_count": 1}
-                        await self.emit("info",
-                            f"✅ Spot VM verified running: {inst_name} in {zone}")
-                        return True
-                    return False
-                else:
-                    await self.emit("warning",
-                        f"⚠️ Spot VM failed in {zone}: {self._parse_api_error(data)}")
-                    return False
-        except httpx.TimeoutException:
-            await self.emit("warning", f"⚠️ Timeout creating Spot VM in {zone}")
-            return False
+            url = (f"https://compute.googleapis.com/compute/v1/projects/{self.project}"
+                   f"/zones/{zone}/instances")
+
+            if is_accel_opt:
+                # A3/A4 families: GPUs integrated into machine type, need GVNIC,
+                # use HPC VM image, no guestAccelerators
+                body = {
+                    "name": inst_name,
+                    "machineType": f"zones/{zone}/machineTypes/{self.machine_type}",
+                    "scheduling": {
+                        "provisioningModel": "SPOT",
+                        "instanceTerminationAction": "STOP",
+                        "automaticRestart": False,
+                        "onHostMaintenance": "TERMINATE",
+                    },
+                    "disks": [{"boot": True, "autoDelete": True,
+                               "initializeParams": {
+                                   "sourceImage": "projects/cloud-hpc-image-public/global/images/family/hpc-rocky-linux-8",
+                                   "diskSizeGb": "200",
+                                   "diskType": f"zones/{zone}/diskTypes/pd-ssd",
+                               }}],
+                    "networkInterfaces": [{
+                        "network": network,
+                        "nicType": "GVNIC",
+                        "accessConfigs": [{"type": "ONE_TO_ONE_NAT", "name": "External NAT"}],
+                    }],
+                }
+            else:
+                # Standard GPU families (G2, A2): need guestAccelerators
+                body = {
+                    "name": inst_name,
+                    "machineType": f"zones/{zone}/machineTypes/{self.machine_type}",
+                    "scheduling": {
+                        "provisioningModel": "SPOT",
+                        "instanceTerminationAction": "STOP",
+                        "automaticRestart": False,
+                    },
+                    "disks": [{"boot": True, "autoDelete": True,
+                               "initializeParams": {
+                                   "sourceImage": "projects/debian-cloud/global/images/family/debian-12",
+                                   "diskSizeGb": "50",
+                               }}],
+                    "networkInterfaces": [{
+                        "network": network,
+                        "accessConfigs": [{"type": "ONE_TO_ONE_NAT", "name": "External NAT"}],
+                    }],
+                }
+                if machine_info.get("accelerator_type"):
+                    body["guestAccelerators"] = [{
+                        "acceleratorType": f"zones/{zone}/acceleratorTypes/{machine_info['accelerator_type']}",
+                        "acceleratorCount": machine_info["gpu_count"],
+                    }]
+                    body["scheduling"]["onHostMaintenance"] = "TERMINATE"
+
+            headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+            try:
+                async with httpx.AsyncClient(timeout=120) as client:
+                    resp = await client.post(url, json=body, headers=headers)
+                    data = resp.json()
+                    if resp.status_code in (200, 201):
+                        verified = await self._wait_for_operation(data, zone, f"Spot VM {inst_name}")
+                        if verified:
+                            created.append(inst_name)
+                            await self.emit("info",
+                                f"✅ Spot VM verified running: {inst_name} in {zone}")
+                        else:
+                            await self.emit("warning",
+                                f"⚠️ Spot VM operation not verified for {inst_name}")
+                    else:
+                        err_msg = self._parse_api_error(data)
+                        await self.emit("warning",
+                            f"⚠️ Spot VM failed in {zone}: {err_msg}")
+                        # For capacity errors, don't try more instances in same zone
+                        if "no capacity" in err_msg.lower() or "stock" in err_msg.lower():
+                            return False
+            except httpx.TimeoutException:
+                await self.emit("warning", f"⚠️ Timeout creating Spot VM in {zone}")
+
+        if created:
+            self.result = {"method": "spot", "instance_names": created,
+                           "zone": zone, "vm_count": len(created)}
+            return True
+        return False
 
     # ── TPU-specific methods ───────────────────────────────────────────
 
