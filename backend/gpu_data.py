@@ -327,8 +327,8 @@ FAMILY_TO_GPU_ZONE_KEY = {
 # Consumption model support matrix
 CONSUMPTION_SUPPORT = {
     "on_demand": {
-        "A4X Max": True, "A4X": True, "A4": True,
-        "A3 Ultra": True, "A3 Mega": True, "A3 High": True,
+        "A4X Max": True, "A4X": True, "A4": False,
+        "A3 Ultra": False, "A3 Mega": True, "A3 High": True,
         "A2 Ultra": True, "A2 Standard": True, "A2 Mega": True,
         "G4": True, "G2": True,
     },
@@ -356,6 +356,7 @@ CONSUMPTION_SUPPORT = {
 TPU_TYPES = {
     "v6e": {
         "gpu": "Cloud TPU v6e (Trillium)",
+        "accelerator_prefix": "v6e",
         "zones": ["asia-northeast1-b", "europe-west4-a", "southamerica-west1-a",
                    "us-central1-b", "us-east1-d", "us-east5-a", "us-east5-b"],
         "machine_types": {
@@ -368,6 +369,7 @@ TPU_TYPES = {
     },
     "v5p": {
         "gpu": "Cloud TPU v5p (Viperfish)",
+        "accelerator_prefix": "v5p",
         "zones": ["europe-west4-b", "us-central1-a", "us-east5-a"],
         "machine_types": {
             "ct5p-hightpu-1t": {"chips": 1, "vcpus": 52, "memory_gb": 112, "hbm_gb": 95},
@@ -379,6 +381,7 @@ TPU_TYPES = {
     },
     "v5e": {
         "gpu": "Cloud TPU v5e (Viperlite)",
+        "accelerator_prefix": "v5litepod",
         "zones": ["europe-west4-b", "us-central1-a", "us-south1-a",
                    "us-west1-c", "us-west4-a"],
         "machine_types": {
@@ -391,6 +394,7 @@ TPU_TYPES = {
     },
     "v4": {
         "gpu": "Cloud TPU v4 (Pufferfish)",
+        "accelerator_prefix": "v4",
         "zones": ["us-central2-b"],
         "machine_types": {
             "ct4p-hightpu-4t": {"chips": 4, "vcpus": 240, "memory_gb": 408, "hbm_gb": 128},
@@ -400,6 +404,7 @@ TPU_TYPES = {
     },
     "v3": {
         "gpu": "Cloud TPU v3 (Dragonfish)",
+        "accelerator_prefix": "v3",
         "zones": ["europe-west4-a", "us-central1-a", "us-central1-b"],
         "machine_types": {
             "v3-8": {"chips": 4, "vcpus": 96, "memory_gb": 340, "hbm_gb": 64},
@@ -409,6 +414,7 @@ TPU_TYPES = {
     },
     "v2": {
         "gpu": "Cloud TPU v2 (Jellyfish)",
+        "accelerator_prefix": "v2",
         "zones": ["asia-east1-c", "europe-west4-a", "us-central1-a",
                    "us-central1-b", "us-central1-c"],
         "machine_types": {

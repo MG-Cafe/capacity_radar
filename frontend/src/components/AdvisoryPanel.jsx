@@ -6,6 +6,7 @@ import {
   Alert, AlertTitle, CircularProgress, Chip, Card, CardContent,
   FormControl, InputLabel, Select, OutlinedInput, Checkbox,
   ListItemText, Divider, Tooltip, IconButton, Collapse,
+  FormControlLabel, Switch,
 } from '@mui/material'
 import SearchIcon from '@mui/icons-material/Search'
 import CalendarMonthIcon from '@mui/icons-material/CalendarMonth'
@@ -47,6 +48,8 @@ export default function AdvisoryPanel({ machineTypes = [], loading: mtLoading, p
   const [spotError, setSpotError] = useState(null)
   const [showCalendarErrors, setShowCalendarErrors] = useState(false)
   const [showSpotErrors, setShowSpotErrors] = useState(false)
+  const [showUnsupported, setShowUnsupported] = useState(false)
+  const [calendarQueryInfo, setCalendarQueryInfo] = useState(null) // tracks which mode was used
 
   const selectedMachineInfo = useMemo(() => {
     return machineTypes.find(mt => mt.machineType === machineType)
@@ -64,18 +67,31 @@ export default function AdvisoryPanel({ machineTypes = [], loading: mtLoading, p
     return { zones, regions }
   }
 
-  const queryCalendarAdvisory = async () => {
+  const queryCalendarAdvisory = async (overrides = {}) => {
     setCalendarLoading(true)
     setCalendarError(null)
     setCalendarResults(null)
+    const isAutoDiscover = !!overrides.startFrom // "Find best times" always passes overrides
+    const usedParams = {
+      mode: isAutoDiscover ? 'auto' : 'manual',
+      durationMin: overrides.durationMinDays || durationMinDays,
+      durationMax: overrides.durationMaxDays || durationMaxDays,
+      from: overrides.startFrom || startFrom,
+      to: overrides.startTo || startTo,
+    }
+    setCalendarQueryInfo(usedParams)
     try {
       const { zones, regions } = getZonesAndRegions()
       const resp = await fetch('/api/advisory/calendar', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          project, machineType, vmCount,
-          durationMinDays, durationMaxDays, startFrom, startTo,
+          project, machineType,
+          vmCount: overrides.vmCount || vmCount,
+          durationMinDays: usedParams.durationMin,
+          durationMaxDays: usedParams.durationMax,
+          startFrom: usedParams.from,
+          startTo: usedParams.to,
           regions, zones,
         }),
       })
@@ -148,6 +164,29 @@ export default function AdvisoryPanel({ machineTypes = [], loading: mtLoading, p
           />
         </Box>
 
+        {/* Show unsupported toggle — inside Select Resource */}
+        {machineType && (
+          <Box sx={{ mb: 1.5, mt: 1.5, display: 'flex', alignItems: 'center', gap: 1 }}>
+            <FormControlLabel
+              control={
+                <Switch
+                  checked={showUnsupported}
+                  onChange={(e) => { setShowUnsupported(e.target.checked); setSelectedZones([]) }}
+                  size="small"
+                />
+              }
+              label={
+                <Typography variant="caption" sx={{ color: '#5f6368', fontSize: '0.72rem' }}>
+                  {showUnsupported ? 'Showing all methods & zones' : 'Showing only supported methods & zones'}
+                </Typography>
+              }
+            />
+            <Tooltip title="When off, only shows zones and consumption models that are officially supported for this chip. Enable to see all options.">
+              <InfoOutlinedIcon sx={{ fontSize: 14, color: '#80868b', cursor: 'help' }} />
+            </Tooltip>
+          </Box>
+        )}
+
         <Grid container spacing={2} alignItems="center">
           <Grid item xs={12} md={5}>
             <FormControl fullWidth size="small">
@@ -157,7 +196,7 @@ export default function AdvisoryPanel({ machineTypes = [], loading: mtLoading, p
                 value={selectedZones}
                 onChange={handleZoneChange}
                 input={<OutlinedInput label="Zones (optional filter)" />}
-                renderValue={(selected) => selected.length === 0 ? 'All zones' : `${selected.length} zones selected`}
+                renderValue={(selected) => selected.length === 0 ? 'All supported zones' : `${selected.length} zones selected`}
                 disabled={!machineType}
               >
                 {availableZones.map(zone => (
@@ -173,16 +212,18 @@ export default function AdvisoryPanel({ machineTypes = [], loading: mtLoading, p
             <Grid item xs={12} md={7}>
               <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', alignItems: 'center' }}>
                 <Typography variant="body2" color="text.secondary" sx={{ mr: 0.5 }}>Supported:</Typography>
-                {Object.entries(selectedMachineInfo.supported).map(([key, supported]) => {
-                  const labels = { on_demand: 'On-Demand', spot: 'Spot', dws_calendar: 'DWS Calendar', dws_flex: 'DWS Flex' }
-                  return (
-                    <Chip key={key} label={labels[key]} size="small"
-                      color={supported ? 'success' : 'default'}
-                      variant={supported ? 'filled' : 'outlined'}
-                      sx={{ height: 22, fontSize: '0.65rem', ...(supported ? {} : { opacity: 0.4, textDecoration: 'line-through' }) }}
-                    />
-                  )
-                })}
+                {Object.entries(selectedMachineInfo.supported)
+                  .filter(([key, supported]) => showUnsupported || supported)
+                  .map(([key, supported]) => {
+                    const labels = { on_demand: 'On-Demand', spot: 'Spot', dws_calendar: 'DWS Calendar', dws_flex: 'DWS Flex' }
+                    return (
+                      <Chip key={key} label={labels[key]} size="small"
+                        color={supported ? 'success' : 'default'}
+                        variant={supported ? 'filled' : 'outlined'}
+                        sx={{ height: 22, fontSize: '0.65rem', ...(supported ? {} : { opacity: 0.4, textDecoration: 'line-through' }) }}
+                      />
+                    )
+                  })}
                 <Typography variant="body2" color="text.secondary" sx={{ ml: 0.5 }}>
                   | {availableZones.length} zones
                 </Typography>
@@ -195,6 +236,7 @@ export default function AdvisoryPanel({ machineTypes = [], loading: mtLoading, p
       {/* Two advisory sections side by side */}
       <Grid container spacing={3}>
         {/* Calendar Advisory */}
+        {(showUnsupported || !machineType || supportsCalendar) && (
         <Grid item xs={12} lg={6}>
           <Paper sx={{ p: 3, height: '100%' }}>
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
@@ -242,14 +284,36 @@ export default function AdvisoryPanel({ machineTypes = [], loading: mtLoading, p
                       InputLabelProps={{ shrink: true }} helperText="Latest start" />
                   </Grid>
                 </Grid>
-                <Button
-                  fullWidth variant="contained" sx={{ mt: 1.5 }}
-                  onClick={queryCalendarAdvisory}
-                  disabled={!canQuery || calendarLoading || !supportsCalendar}
-                  startIcon={calendarLoading ? <CircularProgress size={16} /> : <CalendarMonthIcon />}
-                >
-                  Query Calendar Advisory
-                </Button>
+                <Box sx={{ display: 'flex', gap: 1, mt: 1.5 }}>
+                  <Button
+                    variant="contained" sx={{ flex: 1 }}
+                    onClick={() => queryCalendarAdvisory()}
+                    disabled={!canQuery || calendarLoading || !supportsCalendar}
+                    startIcon={calendarLoading ? <CircularProgress size={16} /> : <CalendarMonthIcon />}
+                  >
+                    Query with dates
+                  </Button>
+                  <Tooltip title="Scan the next 6 months with flexible 1-90 day duration to find the best time windows automatically" arrow>
+                    <span>
+                      <Button
+                        variant="outlined" sx={{ flex: 1 }}
+                        onClick={() => {
+                          const from = new Date(); from.setDate(from.getDate() + 1)
+                          const to = new Date(); to.setMonth(to.getMonth() + 6)
+                          queryCalendarAdvisory({
+                            durationMinDays: 1, durationMaxDays: 90,
+                            startFrom: from.toISOString().split('T')[0],
+                            startTo: to.toISOString().split('T')[0],
+                          })
+                        }}
+                        disabled={!canQuery || calendarLoading || !supportsCalendar}
+                        startIcon={calendarLoading ? <CircularProgress size={16} /> : <SearchIcon />}
+                      >
+                        🔍 Find best times
+                      </Button>
+                    </span>
+                  </Tooltip>
+                </Box>
               </Box>
             )}
 
@@ -262,6 +326,20 @@ export default function AdvisoryPanel({ machineTypes = [], loading: mtLoading, p
 
             {calendarResults && (
               <>
+                {/* Query summary banner */}
+                {calendarQueryInfo && (
+                  <Alert severity={calendarQueryInfo.mode === 'auto' ? 'info' : 'success'}
+                    icon={calendarQueryInfo.mode === 'auto' ? <SearchIcon /> : <CalendarMonthIcon />}
+                    sx={{ mb: 2, py: 0.5, '& .MuiAlert-message': { fontSize: '0.78rem' } }}>
+                    <strong>{calendarQueryInfo.mode === 'auto' ? '🔍 Auto-Discovery' : '📅 Custom Dates'}:</strong>{' '}
+                    {calendarQueryInfo.from} → {calendarQueryInfo.to} | Duration: {calendarQueryInfo.durationMin}–{calendarQueryInfo.durationMax} days
+                    {(() => {
+                      const recCount = calendarResults.recommendations.filter(r => r.status === 'RECOMMENDED').length
+                      const noCapCount = calendarResults.recommendations.filter(r => r.status === 'NO_CAPACITY').length
+                      return <> | <strong>{recCount} recommended</strong>, {noCapCount} no capacity</>
+                    })()}
+                  </Alert>
+                )}
                 {calendarResults.tpuInfo && (
                   <Alert severity="info" sx={{ mb: 2, '& .MuiAlert-message': { fontSize: '0.8rem', width: '100%' } }}>
                     <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 0.5 }}>
@@ -290,38 +368,56 @@ export default function AdvisoryPanel({ machineTypes = [], loading: mtLoading, p
                     </Box>
                   </Alert>
                 )}
-                {calendarResults.recommendations.length > 0 ? (
-                  <TableContainer>
-                    <Table size="small">
-                      <TableHead>
-                        <TableRow>
-                          <TableCell>Zone</TableCell>
-                          <TableCell>Status</TableCell>
-                          <TableCell>Details</TableCell>
-                        </TableRow>
-                      </TableHead>
-                      <TableBody>
-                        {calendarResults.recommendations
-                          .sort((a, b) => (a.status === 'RECOMMENDED' ? -1 : 1))
-                          .map((rec, idx) => (
-                          <TableRow key={idx} hover sx={rec.status === 'RECOMMENDED' ? { bgcolor: '#e6f4ea' } : {}}>
-                            <TableCell sx={{ fontWeight: 500 }}>{rec.zone}</TableCell>
-                            <TableCell>
-                              <Chip label={rec.status || 'UNKNOWN'} size="small"
-                                color={rec.status === 'RECOMMENDED' ? 'success' : rec.status === 'NO_CAPACITY' ? 'error' : 'default'}
-                                sx={{ height: 22, fontSize: '0.65rem' }} />
-                            </TableCell>
-                            <TableCell sx={{ fontSize: '0.75rem', color: '#5f6368' }}>
-                              {rec.details || (rec.status === 'RECOMMENDED' ? '✅ Capacity available' : '—')}
-                            </TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </TableContainer>
-                ) : (
-                  <Alert severity="warning">No calendar advisory recommendations found.</Alert>
-                )}
+                {(() => {
+                  const validStatuses = ['RECOMMENDED', 'NO_CAPACITY', 'NO_DATA']
+                  const filteredRecs = showUnsupported
+                    ? calendarResults.recommendations
+                    : calendarResults.recommendations.filter(r => validStatuses.includes(r.status))
+                  const hiddenCount = calendarResults.recommendations.length - filteredRecs.length
+                  return filteredRecs.length > 0 ? (
+                    <>
+                      <TableContainer>
+                        <Table size="small">
+                          <TableHead>
+                            <TableRow>
+                              <TableCell>Zone</TableCell>
+                              <TableCell>Status</TableCell>
+                              <TableCell>Details</TableCell>
+                            </TableRow>
+                          </TableHead>
+                          <TableBody>
+                            {filteredRecs
+                              .sort((a, b) => (a.status === 'RECOMMENDED' ? -1 : 1))
+                              .map((rec, idx) => (
+                              <TableRow key={idx} hover sx={rec.status === 'RECOMMENDED' ? { bgcolor: '#e6f4ea' } : {}}>
+                                <TableCell sx={{ fontWeight: 500 }}>{rec.zone}</TableCell>
+                                <TableCell>
+                                  <Chip label={rec.status || 'UNKNOWN'} size="small"
+                                    color={rec.status === 'RECOMMENDED' ? 'success' : rec.status === 'NO_CAPACITY' ? 'error' : 'default'}
+                                    sx={{ height: 22, fontSize: '0.65rem' }} />
+                                </TableCell>
+                                <TableCell sx={{ fontSize: '0.75rem', color: '#5f6368' }}>
+                                  {rec.details || (rec.status === 'RECOMMENDED' ? '✅ Capacity available' : '—')}
+                                </TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </TableContainer>
+                      {hiddenCount > 0 && !showUnsupported && (
+                        <Typography variant="caption" sx={{ mt: 1, display: 'block', color: '#80868b', fontSize: '0.68rem' }}>
+                          {hiddenCount} unsupported zone(s) hidden. Enable "Show all" toggle to see them.
+                        </Typography>
+                      )}
+                    </>
+                  ) : (
+                    <Alert severity="warning">
+                      {calendarResults.recommendations.length > 0
+                        ? `No supported zone results found. ${calendarResults.recommendations.length} unsupported zone(s) hidden. Enable "Show all" toggle to see them.`
+                        : 'No calendar advisory recommendations found.'}
+                    </Alert>
+                  )
+                })()}
                 {calendarResults.errors?.length > 0 && (
                   <Box sx={{ mt: 2 }}>
                     <Button size="small" onClick={() => setShowCalendarErrors(!showCalendarErrors)}
@@ -349,8 +445,10 @@ export default function AdvisoryPanel({ machineTypes = [], loading: mtLoading, p
             )}
           </Paper>
         </Grid>
+        )}
 
         {/* Spot Advisory */}
+        {(showUnsupported || !machineType || selectedMachineInfo?.supported?.spot !== false) && (
         <Grid item xs={12} lg={6}>
           <Paper sx={{ p: 3, height: '100%' }}>
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
@@ -456,6 +554,7 @@ export default function AdvisoryPanel({ machineTypes = [], loading: mtLoading, p
             )}
           </Paper>
         </Grid>
+        )}
       </Grid>
     </Box>
   )

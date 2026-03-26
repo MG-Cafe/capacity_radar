@@ -36,14 +36,16 @@ import CloudDoneIcon from '@mui/icons-material/CloudDone'
 import SyncIcon from '@mui/icons-material/Sync'
 import HourglassEmptyIcon from '@mui/icons-material/HourglassEmpty'
 import LabelIcon from '@mui/icons-material/Label'
-import { ToggleButton, ToggleButtonGroup } from '@mui/material'
+import VisibilityIcon from '@mui/icons-material/Visibility'
+import VisibilityOffIcon from '@mui/icons-material/VisibilityOff'
+import { ToggleButton, ToggleButtonGroup, FormControlLabel, Switch } from '@mui/material'
 
 
 const METHOD_OPTIONS = [
   { value: 'on_demand', label: 'On-Demand Reservation', icon: <StorageIcon sx={{ fontSize: 18 }} />, color: '#1a73e8', desc: 'Reserve capacity at on-demand rates. Pay per second.' },
-  { value: 'dws_calendar', label: 'DWS Calendar Mode', icon: <CalendarMonthIcon sx={{ fontSize: 18 }} />, color: '#34a853', desc: 'Book capacity for a specific time window (1-90 days).' },
-  { value: 'dws_flex', label: 'DWS Flex Start', icon: <CloudQueueIcon sx={{ fontSize: 18 }} />, color: '#9334e6', desc: 'Queue for capacity; starts when available (max 7 days).' },
-  { value: 'spot', label: 'Spot VMs', icon: <BoltIcon sx={{ fontSize: 18 }} />, color: '#f9ab00', desc: 'Spare capacity at discount. Can be preempted.' },
+  { value: 'dws_calendar', label: 'DWS Calendar Mode', icon: <CalendarMonthIcon sx={{ fontSize: 18 }} />, color: '#34a853', desc: 'Book capacity for a specific time window (1–90 days).' },
+  { value: 'dws_flex', label: 'DWS Flex Start', icon: <CloudQueueIcon sx={{ fontSize: 18 }} />, color: '#9334e6', desc: 'Queue for capacity. Starts when available (usage max 14 days).' },
+  { value: 'spot', label: 'Spot VMs', icon: <BoltIcon sx={{ fontSize: 18 }} />, color: '#f9ab00', desc: 'Spare capacity at discount. Can be preempted anytime.' },
 ]
 
 const DEFAULT_PRIORITY = {
@@ -65,10 +67,12 @@ export default function ScanningPanel({ machineTypes = [], loading: mtLoading, p
   const [category, setCategory] = useState('GPU')
   const [chip, setChip] = useState('')
   const [machineType, setMachineType] = useState('')
-  const [vmCount, setVmCount] = useState(1)
-  const [dwsCalendarDurationHours, setDwsCalendarDurationHours] = useState(24)
+  const [minVmCount, setMinVmCount] = useState(1)
+  const [maxVmCount, setMaxVmCount] = useState(1)
+  const [totalHuntingHours, setTotalHuntingHours] = useState(1)
   const [priorities, setPriorities] = useState([{ ...DEFAULT_PRIORITY }])
   const [executionMode, setExecutionMode] = useState('sequential')
+  const [showUnsupported, setShowUnsupported] = useState(false)
 
   // Scanning state
   const [scanning, setScanning] = useState(false)
@@ -116,6 +120,24 @@ export default function ScanningPanel({ machineTypes = [], loading: mtLoading, p
     const maxAttempts = totalZones * totalRetries
     setProgress(Math.min(95, Math.round((attempts / maxAttempts) * 100)))
   }, [logs, scanning, scanStatus, availableZones, priorities])
+
+  // Auto-switch priority methods to supported ones when machine type changes
+  useEffect(() => {
+    if (!selectedMachineInfo || showUnsupported) return
+    const supported = selectedMachineInfo.supported || {}
+    const supportedMethods = METHOD_OPTIONS.filter(m => supported[m.value] !== false).map(m => m.value)
+    if (supportedMethods.length === 0) return
+
+    let changed = false
+    const updated = priorities.map(p => {
+      if (supported[p.method] === false) {
+        changed = true
+        return { ...p, method: supportedMethods[0], zones: [] }
+      }
+      return p
+    })
+    if (changed) setPriorities(updated)
+  }, [selectedMachineInfo, showUnsupported])
 
   // Cleanup WebSocket on unmount
   useEffect(() => {
@@ -167,7 +189,10 @@ export default function ScanningPanel({ machineTypes = [], loading: mtLoading, p
       const config = {
         project,
         machineType,
-        vmCount,
+        vmCount: maxVmCount,
+        minVmCount,
+        maxVmCount,
+        totalHuntingHours,
         priorities: priorities.map(p => ({
           method: p.method,
           zones: p.zones.length > 0 ? p.zones : availableZones,
@@ -179,7 +204,7 @@ export default function ScanningPanel({ machineTypes = [], loading: mtLoading, p
           calendar_start_time: p.calendarStartTime || '',
           calendar_end_time: p.calendarEndTime || '',
         })),
-        dwsCalendarDurationHours,
+        dwsCalendarDurationHours: 24,
         parallel: executionMode === 'parallel',
       }
       ws.send(JSON.stringify({ action: 'scan', config }))
@@ -209,14 +234,28 @@ export default function ScanningPanel({ machineTypes = [], loading: mtLoading, p
       setScanning(false)
     }
 
-    ws.onclose = () => { if (scanning) setScanning(false) }
-  }, [machineType, project, priorities, vmCount, availableZones, dwsCalendarDurationHours, executionMode])
+    ws.onclose = () => { setScanning(false) }
+  }, [machineType, project, priorities, minVmCount, maxVmCount, totalHuntingHours, availableZones, executionMode])
 
   const cancelScan = useCallback(() => {
-    if (wsRef.current && sessionId) {
-      wsRef.current.send(JSON.stringify({ action: 'cancel', sessionId }))
+    if (wsRef.current) {
+      if (sessionId) {
+        wsRef.current.send(JSON.stringify({ action: 'cancel', sessionId }))
+      }
+      // Also close the WebSocket to force-stop
+      setTimeout(() => {
+        if (wsRef.current) {
+          wsRef.current.close()
+          wsRef.current = null
+        }
+        setScanning(false)
+        if (!scanStatus || scanStatus === 'running') setScanStatus('cancelled')
+      }, 1000)
+    } else {
+      setScanning(false)
+      setScanStatus('cancelled')
     }
-  }, [sessionId])
+  }, [sessionId, scanStatus])
 
   const canStart = machineType && project && priorities.length > 0 && !scanning
 
@@ -249,14 +288,42 @@ export default function ScanningPanel({ machineTypes = [], loading: mtLoading, p
               />
             </Box>
             <Grid container spacing={2}>
-              <Grid item xs={6} sm={4}>
-                <TextField fullWidth type="number" label="VM / Node Count" value={vmCount}
-                  onChange={(e) => setVmCount(Math.max(1, parseInt(e.target.value) || 1))}
+              <Grid item xs={6} sm={3}>
+                <TextField fullWidth type="number" label="Min VMs / Nodes" value={minVmCount}
+                  onChange={(e) => {
+                    const val = Math.max(1, parseInt(e.target.value) || 1)
+                    setMinVmCount(val)
+                    if (val > maxVmCount) setMaxVmCount(val)
+                  }}
                   size="small" inputProps={{ min: 1 }} disabled={scanning}
-                  helperText="Number of VMs or TPU nodes"
+                  helperText="Minimum required"
+                />
+              </Grid>
+              <Grid item xs={6} sm={3}>
+                <TextField fullWidth type="number" label="Max VMs / Nodes" value={maxVmCount}
+                  onChange={(e) => {
+                    const val = Math.max(minVmCount, parseInt(e.target.value) || 1)
+                    setMaxVmCount(val)
+                  }}
+                  size="small" inputProps={{ min: minVmCount }} disabled={scanning}
+                  helperText="Ideal target"
+                />
+              </Grid>
+              <Grid item xs={6} sm={3}>
+                <TextField fullWidth type="number" label="Total Hunting Time (hrs)" value={totalHuntingHours}
+                  onChange={(e) => setTotalHuntingHours(Math.max(0.1, parseFloat(e.target.value) || 1))}
+                  size="small" inputProps={{ min: 0.1, step: 0.5 }} disabled={scanning}
+                  helperText="Max time to scan"
                 />
               </Grid>
             </Grid>
+            <Box sx={{ mt: 1, display: 'flex', alignItems: 'center', gap: 0.5 }}>
+              <InfoOutlinedIcon sx={{ fontSize: 13, color: '#80868b' }} />
+              <Typography variant="caption" sx={{ color: '#80868b', fontSize: '0.68rem' }}>
+                Total hunting time is the max wait time for trying all priorities. It excludes resource provisioning time.
+                {minVmCount < maxVmCount && ` System will try for ${maxVmCount} VMs first, scaling down to ${minVmCount} if needed.`}
+              </Typography>
+            </Box>
           </Paper>
 
           <Paper sx={{ p: 3 }}>
@@ -273,6 +340,30 @@ export default function ScanningPanel({ machineTypes = [], loading: mtLoading, p
                 Add Priority
               </Button>
             </Box>
+
+            {/* Show unsupported toggle */}
+            {machineType && (
+              <Box sx={{ mb: 1.5, display: 'flex', alignItems: 'center', gap: 1 }}>
+                <FormControlLabel
+                  control={
+                    <Switch
+                      checked={showUnsupported}
+                      onChange={(e) => setShowUnsupported(e.target.checked)}
+                      size="small"
+                      disabled={scanning}
+                    />
+                  }
+                  label={
+                    <Typography variant="caption" sx={{ color: '#5f6368', fontSize: '0.72rem' }}>
+                      {showUnsupported ? 'Showing all methods & zones' : 'Showing only supported methods & zones'}
+                    </Typography>
+                  }
+                />
+                <Tooltip title="Enable to see methods and zones that are not officially supported for this chip. Useful if Google adds support later.">
+                  <InfoOutlinedIcon sx={{ fontSize: 14, color: '#80868b', cursor: 'help' }} />
+                </Tooltip>
+              </Box>
+            )}
 
             {priorities.map((priority, index) => {
               const methodInfo = METHOD_OPTIONS.find(m => m.value === priority.method)
@@ -303,17 +394,25 @@ export default function ScanningPanel({ machineTypes = [], loading: mtLoading, p
                       <Grid item xs={12} sm={4}>
                         <TextField fullWidth select label="Method" value={priority.method}
                           onChange={(e) => updatePriority(index, 'method', e.target.value)} size="small" disabled={scanning}>
-                          {METHOD_OPTIONS.map(opt => (
-                            <MenuItem key={opt.value} value={opt.value}>
-                              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                                <Box sx={{ color: opt.color }}>{opt.icon}</Box>
-                                <Box>
-                                  <Typography variant="body2" sx={{ fontWeight: 500, lineHeight: 1.2 }}>{opt.label}</Typography>
-                                  <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.65rem' }}>{opt.desc}</Typography>
-                                </Box>
-                              </Box>
-                            </MenuItem>
-                          ))}
+                          {METHOD_OPTIONS
+                            .filter(opt => showUnsupported || !machineType || selectedMachineInfo?.supported?.[opt.value] !== false)
+                            .map(opt => {
+                              const supported = !machineType || selectedMachineInfo?.supported?.[opt.value] !== false
+                              return (
+                                <MenuItem key={opt.value} value={opt.value}>
+                                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, opacity: supported ? 1 : 0.5 }}>
+                                    <Box sx={{ color: opt.color }}>{opt.icon}</Box>
+                                    <Box>
+                                      <Typography variant="body2" sx={{ fontWeight: 500, lineHeight: 1.2 }}>
+                                        {opt.label}
+                                        {!supported && <Chip label="unsupported" size="small" sx={{ ml: 0.5, height: 16, fontSize: '0.55rem' }} color="warning" variant="outlined" />}
+                                      </Typography>
+                                      <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.65rem', whiteSpace: 'normal', lineHeight: 1.3 }}>{opt.desc}</Typography>
+                                    </Box>
+                                  </Box>
+                                </MenuItem>
+                              )
+                            })}
                         </TextField>
                       </Grid>
                       <Grid item xs={12} sm={4}>
@@ -334,14 +433,15 @@ export default function ScanningPanel({ machineTypes = [], loading: mtLoading, p
                         </FormControl>
                       </Grid>
                       <Grid item xs={6} sm={2}>
-                        <TextField fullWidth type="number" label="Max Retries" value={priority.max_retries}
+                        <TextField fullWidth type="number" label="Retry Rounds" value={priority.max_retries}
                           onChange={(e) => updatePriority(index, 'max_retries', Math.max(1, Math.min(100, parseInt(e.target.value) || 5)))}
-                          size="small" inputProps={{ min: 1, max: 100 }} disabled={scanning} />
+                          size="small" inputProps={{ min: 1, max: 100 }} disabled={scanning}
+                          helperText="Each round tries all zones" />
                       </Grid>
                       <Grid item xs={6} sm={2}>
                         <TextField fullWidth type="number" label="Interval (s)" value={priority.retry_interval}
                           onChange={(e) => updatePriority(index, 'retry_interval', Math.max(10, Math.min(3600, parseInt(e.target.value) || 60)))}
-                          size="small" inputProps={{ min: 10, max: 3600 }} disabled={scanning} helperText="10-3600s" />
+                          size="small" inputProps={{ min: 10, max: 3600 }} disabled={scanning} helperText="Wait between rounds" />
                       </Grid>
                     </Grid>
 
@@ -421,6 +521,57 @@ export default function ScanningPanel({ machineTypes = [], loading: mtLoading, p
               )
             })}
 
+            {/* Priority Time Allocation */}
+            {priorities.length > 0 && (
+              <Box sx={{ mt: 1, mb: 2, p: 1.5, bgcolor: '#e8f0fe', borderRadius: 1, border: '1px solid #d2e3fc' }}>
+                <Typography variant="caption" sx={{ fontWeight: 600, color: '#1a73e8', display: 'flex', alignItems: 'center', gap: 0.5, mb: 1 }}>
+                  <AccessTimeIcon sx={{ fontSize: 14 }} /> Time Allocation per Priority
+                </Typography>
+                {(() => {
+                  const totalHuntingSecs = totalHuntingHours * 3600
+                  const allocations = priorities.map((p, i) => {
+                    const secs = p.max_retries * p.retry_interval
+                    const pct = totalHuntingSecs > 0 ? Math.round((secs / totalHuntingSecs) * 100) : 0
+                    const hrs = (secs / 3600).toFixed(1)
+                    const methodInfo = METHOD_OPTIONS.find(m => m.value === p.method)
+                    return { secs, pct, hrs, label: methodInfo?.label || p.method, color: methodInfo?.color || '#666', index: i }
+                  })
+                  const totalAllocSecs = allocations.reduce((s, a) => s + a.secs, 0)
+                  const totalAllocHrs = (totalAllocSecs / 3600).toFixed(1)
+                  const overUnder = totalAllocSecs - totalHuntingSecs
+                  const isOver = overUnder > 60
+                  const isUnder = overUnder < -60
+
+                  return (
+                    <>
+                      {/* Stacked bar */}
+                      <Box sx={{ display: 'flex', height: 16, borderRadius: 2, overflow: 'hidden', mb: 1, bgcolor: '#e8eaed' }}>
+                        {allocations.map((a, i) => (
+                          <Tooltip key={i} title={`#${a.index + 1} ${a.label}: ${a.hrs}h (${a.pct}%)`}>
+                            <Box sx={{ width: `${Math.max(a.pct, 2)}%`, bgcolor: a.color, opacity: 0.85, transition: 'width 0.3s' }} />
+                          </Tooltip>
+                        ))}
+                      </Box>
+                      <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, mb: 0.5 }}>
+                        {allocations.map((a, i) => (
+                          <Chip key={i} size="small"
+                            label={`#${a.index + 1} ${a.label}: ${a.hrs}h (${a.pct}%)`}
+                            sx={{ height: 20, fontSize: '0.62rem', bgcolor: a.color + '22', color: a.color, fontWeight: 600, border: `1px solid ${a.color}44` }}
+                          />
+                        ))}
+                      </Box>
+                      <Typography variant="caption" sx={{ color: (isOver || isUnder) ? '#d93025' : '#5f6368', fontSize: '0.66rem' }}>
+                        Total allocated: {totalAllocHrs}h / {totalHuntingHours}h
+                        {isOver && ' ⚠ Exceeds total hunting time'}
+                        {isUnder && ' — unused time remaining'}
+                        {!isOver && !isUnder && ' ✓'}
+                      </Typography>
+                    </>
+                  )
+                })()}
+              </Box>
+            )}
+
             {/* Execution Mode */}
             <Box sx={{ mt: 2, mb: 2, p: 2, bgcolor: '#f8f9fa', borderRadius: 1, border: '1px solid #e8eaed' }}>
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
@@ -445,18 +596,11 @@ export default function ScanningPanel({ machineTypes = [], loading: mtLoading, p
             </Box>
 
             <Box sx={{ display: 'flex', gap: 1.5 }}>
-              {!scanning ? (
-                <Button variant="contained" size="large" onClick={startScan} disabled={!canStart}
-                  startIcon={<PlayArrowIcon />}
-                  sx={{ bgcolor: '#1a73e8', px: 4, '&:hover': { bgcolor: '#1557b0' } }}>
-                  Start Scan & Deploy
-                </Button>
-              ) : (
-                <Button variant="contained" size="large" onClick={cancelScan}
-                  startIcon={<StopIcon />} color="error" sx={{ px: 4 }}>
-                  Cancel Scan
-                </Button>
-              )}
+              <Button variant="contained" size="large" onClick={startScan} disabled={!canStart}
+                startIcon={<PlayArrowIcon />}
+                sx={{ bgcolor: '#1a73e8', px: 4, '&:hover': { bgcolor: '#1557b0' } }}>
+                Start Scan & Deploy
+              </Button>
             </Box>
           </Paper>
         </Grid>
@@ -476,7 +620,7 @@ export default function ScanningPanel({ machineTypes = [], loading: mtLoading, p
               )}
             </Box>
 
-            {/* Progress bar */}
+            {/* Progress bar + Cancel */}
             <Box sx={{ mb: 1.5 }}>
               <LinearProgress
                 variant={scanning && progress < 5 ? 'indeterminate' : 'determinate'}
@@ -490,11 +634,20 @@ export default function ScanningPanel({ machineTypes = [], loading: mtLoading, p
                   }
                 }}
               />
-              {(scanning || scanStatus) && (
-                <Typography variant="caption" color="text.secondary" sx={{ mt: 0.25, display: 'block', textAlign: 'right' }}>
-                  {scanStatus === 'success' ? 'Completed' : scanStatus === 'failed' ? 'Failed' : `${progress}%`}
-                </Typography>
-              )}
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mt: 0.5 }}>
+                {scanning ? (
+                  <Button size="small" onClick={cancelScan} startIcon={<StopIcon sx={{ fontSize: 14 }} />}
+                    color="error" variant="outlined"
+                    sx={{ fontSize: '0.72rem', py: 0.25, px: 1.5, textTransform: 'none' }}>
+                    Cancel Scan
+                  </Button>
+                ) : <Box />}
+                {(scanning || scanStatus) && (
+                  <Typography variant="caption" color="text.secondary">
+                    {scanStatus === 'success' ? 'Completed' : scanStatus === 'failed' ? 'Failed' : `${progress}%`}
+                  </Typography>
+                )}
+              </Box>
             </Box>
 
             {/* Log entries */}

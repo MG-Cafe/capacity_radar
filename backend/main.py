@@ -78,6 +78,9 @@ class ScanRequest(BaseModel):
     project: str
     machineType: str
     vmCount: int = Field(default=1, ge=1)
+    minVmCount: int = Field(default=1, ge=1)
+    maxVmCount: int = Field(default=1, ge=1)
+    totalHuntingHours: float = Field(default=1, ge=0.1)
     priorities: list[PriorityConfig]
     dwsCalendarDurationHours: int = Field(default=24, ge=1, le=2160)  # Max 90 days
 
@@ -366,9 +369,43 @@ async def websocket_scan(websocket: WebSocket):
                     "message": f"Session created: {session.session_id}",
                 })
 
-                # Run hunting
+                # Run hunting as background task so cancel messages can be received
                 parallel = message.get("config", {}).get("parallel", False)
-                await session.run(parallel=parallel)
+                scan_task = asyncio.create_task(session.run(parallel=parallel))
+
+                # Listen for cancel while scan runs
+                try:
+                    while not scan_task.done():
+                        try:
+                            data = await asyncio.wait_for(
+                                websocket.receive_text(), timeout=1.0
+                            )
+                            msg = json.loads(data)
+                            if msg.get("action") == "cancel":
+                                logger.info(f"Cancel requested for session {session.session_id}")
+                                session.cancel()
+                                await websocket.send_json({
+                                    "type": "cancelled",
+                                    "message": "🛑 Scanning session cancelled.",
+                                    "sessionId": session.session_id,
+                                })
+                                break
+                            elif msg.get("action") == "ping":
+                                await websocket.send_json({"type": "pong"})
+                        except asyncio.TimeoutError:
+                            continue
+                        except WebSocketDisconnect:
+                            session.cancel()
+                            raise
+                except WebSocketDisconnect:
+                    session.cancel()
+                    raise
+
+                # Wait for scan to finish (it may already be done or cancelling)
+                try:
+                    await asyncio.wait_for(scan_task, timeout=5.0)
+                except asyncio.TimeoutError:
+                    scan_task.cancel()
 
             elif action == "ping":
                 await websocket.send_json({"type": "pong"})

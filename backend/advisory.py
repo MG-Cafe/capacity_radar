@@ -91,6 +91,7 @@ async def get_calendar_advisory(
 
     # If zones provided, derive regions from zones
     target_regions = set()
+    allowed_zones = set(zones) if zones else set()
     if zones:
         for z in zones:
             region = z.rsplit("-", 1)[0]
@@ -117,7 +118,11 @@ async def get_calendar_advisory(
         if isinstance(result, Exception):
             results["errors"].append(f"{region}: {str(result)}")
         elif result:
-            results["recommendations"].extend(result)
+            # Filter results to only include zones in the allowed zones list
+            for rec in result:
+                zone = rec.get("zone", "")
+                if not allowed_zones or zone in allowed_zones:
+                    results["recommendations"].append(rec)
 
     return results
 
@@ -196,11 +201,20 @@ async def _query_calendar_advisory_region(
                             "recommendationType": rec_type,
                         })
 
-                    # Parse other locations (no capacity)
+                    # Parse other locations — some may still have RECOMMENDED status
                     for loc_key, loc_data in spec.get("otherLocations", {}).items():
                         zone = loc_key.replace("zones/", "")
                         status = loc_data.get("status", "UNKNOWN")
                         details = loc_data.get("details", "")
+                        # GCP sometimes puts RECOMMENDED zones in otherLocations
+                        if status == "RECOMMENDED":
+                            confidence = "MODERATE"
+                        elif status == "NO_CAPACITY":
+                            confidence = "NONE"
+                        elif status == "NOT_SUPPORTED":
+                            confidence = "LOW"
+                        else:
+                            confidence = "LOW"
                         recommendations.append({
                             "region": region,
                             "zone": zone,
@@ -210,7 +224,7 @@ async def _query_calendar_advisory_region(
                             "details": details,
                             "startTime": start_time,
                             "endTime": end_time,
-                            "confidence": "NONE" if status == "NO_CAPACITY" else "LOW",
+                            "confidence": confidence,
                             "source": "DWS Calendar Advisory",
                             "recommendationType": rec_type,
                         })
@@ -344,6 +358,7 @@ async def get_spot_advisory(
         return results
 
     target_regions = set()
+    allowed_zones = set(zones) if zones else set()
     if zones:
         for z in zones:
             region = z.rsplit("-", 1)[0]
@@ -369,7 +384,11 @@ async def get_spot_advisory(
         if isinstance(result, Exception):
             results["errors"].append(f"{region}: {str(result)}")
         elif result:
-            results["recommendations"].extend(result)
+            # Filter results to only include zones in the allowed zones list
+            for rec in result:
+                zone = rec.get("zone", "")
+                if not allowed_zones or zone in allowed_zones:
+                    results["recommendations"].append(rec)
 
     return results
 

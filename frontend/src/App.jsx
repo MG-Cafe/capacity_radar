@@ -23,8 +23,14 @@ const DRAWER_WIDTH = 290
 
 function TabPanel({ children, value, index }) {
   return (
-    <div role="tabpanel" hidden={value !== index} style={{ width: '100%' }}>
-      {value === index && <Box sx={{ pt: 3 }}>{children}</Box>}
+    <div
+      role="tabpanel"
+      style={{
+        width: '100%',
+        display: value === index ? 'block' : 'none',
+      }}
+    >
+      <Box sx={{ pt: 3 }}>{children}</Box>
     </div>
   )
 }

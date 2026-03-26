@@ -530,11 +530,18 @@ class ScanningSession:
         url = (f"https://compute.googleapis.com/compute/beta/projects/{self.project}"
                f"/zones/{zone}/futureReservations")
         prefix_tag = name_prefix if name_prefix else f"gpu-radar-{self.session_id[:8]}"
+        # Multi-node GPU families need deploymentType and specific reservation
+        from gpu_data import MACHINE_TO_FAMILY
+        family = MACHINE_TO_FAMILY.get(self.machine_type, "")
+        needs_specific = family in ("A4", "A3 Ultra", "A4X", "A4X Max")
+        needs_dense = family in ("A4", "A3 Ultra", "A3 Mega", "A3 High", "A4X", "A4X Max")
         body = {
             "name": res_name,
             "autoDeleteAutoCreatedReservations": True,
+            "specificReservationRequired": needs_specific,
             "planningStatus": "SUBMITTED",
             "namePrefix": prefix_tag,
+            "deploymentType": "DENSE" if needs_dense else "DEFAULT",
             "specificSkuProperties": {
                 "totalCount": str(self.vm_count),
                 "instanceProperties": {"machineType": self.machine_type}
@@ -695,11 +702,17 @@ class ScanningSession:
         url = (f"https://compute.googleapis.com/compute/beta/projects/{self.project}"
                f"/zones/{zone}/futureReservations")
         prefix_tag = name_prefix if name_prefix else f"gpu-radar-{self.session_id[:8]}"
+        from gpu_data import MACHINE_TO_FAMILY
+        family = MACHINE_TO_FAMILY.get(self.machine_type, "")
+        needs_specific = family in ("A4", "A3 Ultra", "A4X", "A4X Max")
+        needs_dense = family in ("A4", "A3 Ultra", "A3 Mega", "A3 High", "A4X", "A4X Max")
         body = {
             "name": res_name,
             "autoDeleteAutoCreatedReservations": True,
+            "specificReservationRequired": needs_specific,
             "planningStatus": "SUBMITTED",
             "namePrefix": prefix_tag,
+            "deploymentType": "DENSE" if needs_dense else "DEFAULT",
             "specificSkuProperties": {
                 "totalCount": str(self.vm_count),
                 "instanceProperties": {"machineType": self.machine_type}
@@ -801,14 +814,24 @@ class ScanningSession:
     # ── TPU-specific methods ───────────────────────────────────────────
 
     def _get_tpu_accelerator_type(self, zone: str) -> str:
-        """Build the TPU accelerator type string for the TPU API."""
+        """Build the TPU accelerator type string for the TPU API.
+        
+        For v2/v3: machine type name IS the accelerator type (e.g., v2-8, v3-8)
+        For v5e/v5p/v6e: use accelerator_prefix + chip count (e.g., v5litepod-1, v5p-8)
+        """
         tpu_version = self._get_tpu_version()
         from gpu_data import TPU_TYPES
         tpu_info = TPU_TYPES.get(tpu_version, {})
         mt_spec = tpu_info.get("machine_types", {}).get(self.machine_type, {})
+        
+        # For older TPUs (v2, v3), the machine type name IS the accelerator type
+        if tpu_version in ("v2", "v3"):
+            return self.machine_type  # e.g., "v2-8", "v3-8"
+        
+        # For newer TPUs, use accelerator_prefix + chip count
         chips = mt_spec.get("chips", 1)
-        # TPU accelerator type format: v6e-1, v5e-4, etc.
-        return f"{tpu_version}-{chips}"
+        prefix = tpu_info.get("accelerator_prefix", tpu_version)
+        return f"{prefix}-{chips}"
 
     async def _poll_tpu_operation(self, op_name: str, zone: str, label: str,
                                    max_polls: int = 60, poll_interval: int = 10) -> bool:
