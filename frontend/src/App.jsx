@@ -2,7 +2,8 @@ import React, { useState, useEffect, useCallback } from 'react'
 import {
   AppBar, Toolbar, Typography, Box, Tabs, Tab, Container,
   IconButton, Chip, Tooltip, Paper, TextField, Button,
-  Alert, CircularProgress, Drawer,
+  Alert, CircularProgress, Drawer, Dialog, DialogTitle,
+  DialogContent, DialogActions,
 } from '@mui/material'
 import TipsAndUpdatesIcon from '@mui/icons-material/TipsAndUpdates'
 import RocketLaunchIcon from '@mui/icons-material/RocketLaunch'
@@ -49,6 +50,7 @@ export default function App() {
   const [drawerOpen, setDrawerOpen] = useState(true)
   const [demoMode, setDemoMode] = useState(false)
   const [repoUrl, setRepoUrl] = useState('')
+  const [demoDialogOpen, setDemoDialogOpen] = useState(false)
 
   useEffect(() => {
     // Fetch config and machine types in parallel
@@ -127,12 +129,14 @@ export default function App() {
       {/* App Bar */}
       <AppBar position="static" color="inherit" sx={{ bgcolor: '#fff', zIndex: 1201 }}>
         <Toolbar sx={{ gap: 1.5 }}>
-          {/* Drawer toggle */}
-          <Tooltip title={drawerOpen ? 'Close panel' : 'Open auth panel'}>
-            <IconButton onClick={() => setDrawerOpen(!drawerOpen)} edge="start" size="small">
-              {drawerOpen ? <ChevronLeftIcon /> : <MenuIcon />}
-            </IconButton>
-          </Tooltip>
+          {/* Drawer toggle - hidden in demo mode */}
+          {!demoMode && (
+            <Tooltip title={drawerOpen ? 'Close panel' : 'Open auth panel'}>
+              <IconButton onClick={() => setDrawerOpen(!drawerOpen)} edge="start" size="small">
+                {drawerOpen ? <ChevronLeftIcon /> : <MenuIcon />}
+              </IconButton>
+            </Tooltip>
+          )}
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
             <img src="/gcp_logo.png" alt="Google Cloud" style={{ height: 32 }} />
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, ml: 0.5 }}>
@@ -167,7 +171,8 @@ export default function App() {
                 label={project}
                 size="small"
                 variant="outlined"
-                sx={{ height: 26, fontSize: '0.72rem', fontWeight: 500 }}
+                onClick={demoMode ? () => setDemoDialogOpen(true) : undefined}
+                sx={{ height: 26, fontSize: '0.72rem', fontWeight: 500, cursor: demoMode ? 'pointer' : 'default' }}
               />
             </Box>
           ) : (
@@ -442,6 +447,55 @@ export default function App() {
           </Box>
         </Box>
       </Box>
+
+      {/* Demo Mode Dialog */}
+      <Dialog open={demoDialogOpen} onClose={() => setDemoDialogOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1, pb: 1 }}>
+          <CloudIcon sx={{ color: '#1a73e8' }} />
+          <span>Demo Mode</span>
+        </DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" sx={{ mb: 2, color: '#5f6368' }}>
+            This is a hosted demo of <strong>Capacity Radar</strong>. Authentication, project switching,
+            and GPU/TPU deployment are disabled in this version.
+          </Typography>
+          <Typography variant="body2" sx={{ mb: 1.5, fontWeight: 500 }}>
+            To use your own project with full functionality:
+          </Typography>
+          <Box sx={{ bgcolor: '#f8f9fa', borderRadius: 1, p: 2, border: '1px solid #e8eaed' }}>
+            {[
+              { step: '1', cmd: `git clone ${repoUrl || 'https://github.com/MG-Cafe/capacity_radar.git'}` },
+              { step: '2', cmd: 'cd capacity_radar && cat README.md' },
+              { step: '3', cmd: 'gcloud auth application-default login' },
+              { step: '4', cmd: 'cd backend && python3 main.py' },
+            ].map(({ step, cmd }) => (
+              <Box key={step} sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+                <Chip label={step} size="small" sx={{ height: 20, width: 20, fontSize: '0.65rem', bgcolor: '#1a73e8', color: '#fff' }} />
+                <code style={{ flex: 1, fontSize: '0.78rem', background: '#e8eaed', padding: '4px 8px', borderRadius: 4 }}>{cmd}</code>
+                <IconButton size="small" onClick={() => copyCmd(cmd)} sx={{ p: 0.3 }}>
+                  <ContentCopyIcon sx={{ fontSize: 14 }} />
+                </IconButton>
+              </Box>
+            ))}
+          </Box>
+          <Alert severity="info" sx={{ mt: 2, py: 0.5 }}>
+            <Typography variant="caption">
+              The <strong>Capacity Advisory</strong> tab (DWS Calendar & Spot VM checks) is fully functional in this demo.
+              Only deployment and project configuration are restricted.
+            </Typography>
+          </Alert>
+        </DialogContent>
+        <DialogActions>
+          {repoUrl && (
+            <Button href={repoUrl} target="_blank" size="small" sx={{ textTransform: 'none' }}>
+              View on GitHub
+            </Button>
+          )}
+          <Button onClick={() => setDemoDialogOpen(false)} variant="contained" size="small" sx={{ textTransform: 'none' }}>
+            Got it
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   )
 }

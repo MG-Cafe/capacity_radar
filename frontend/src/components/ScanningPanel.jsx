@@ -738,6 +738,37 @@ function LogEntry({ log }) {
   const timestamp = log.timestamp ? new Date(log.timestamp).toLocaleTimeString() : ''
   const cleanMessage = stripEmojis(log.message)
 
+  // Render demo_notice as a structured card
+  if (log.type === 'demo_notice' && log.details) {
+    return (
+      <Box sx={{ my: 1, p: 1.5, borderRadius: 1, bgcolor: '#e8f0fe', border: '1px solid #d2e3fc' }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mb: 1 }}>
+          <CloudQueueIcon sx={{ fontSize: 16, color: '#1a73e8' }} />
+          <Typography variant="body2" sx={{ fontWeight: 600, color: '#1a73e8', fontSize: '0.82rem' }}>
+            {cleanMessage}
+          </Typography>
+        </Box>
+        <Typography variant="caption" sx={{ display: 'block', color: '#5f6368', mb: 1, lineHeight: 1.4 }}>
+          {log.details.description}
+        </Typography>
+        <Typography variant="caption" sx={{ display: 'block', fontWeight: 600, color: '#3c4043', mb: 0.5 }}>
+          Run locally with full features:
+        </Typography>
+        {log.details.steps?.map((step, i) => (
+          <Box key={i} sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mb: 0.3 }}>
+            <Typography variant="caption" sx={{ color: '#1a73e8', fontWeight: 700, fontSize: '0.65rem', width: 14 }}>{i + 1}.</Typography>
+            <code style={{ fontSize: '0.72rem', background: '#fff', padding: '2px 6px', borderRadius: 3, flex: 1, color: '#3c4043' }}>{step}</code>
+          </Box>
+        ))}
+        {log.details.note && (
+          <Typography variant="caption" sx={{ display: 'block', mt: 1, color: '#137333', fontWeight: 500, fontSize: '0.7rem' }}>
+            ✓ {log.details.note}
+          </Typography>
+        )}
+      </Box>
+    )
+  }
+
   return (
     <Box sx={{
       display: 'flex', alignItems: 'flex-start', gap: 1,

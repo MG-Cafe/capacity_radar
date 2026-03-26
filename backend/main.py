@@ -418,23 +418,27 @@ async def websocket_scan(websocket: WebSocket):
                     ts = datetime.now(tz.utc).isoformat()
                     methods_str = ", ".join(p["method"] for p in priorities)
                     zones_str = ", ".join(priorities[0]["zones"][:3]) if priorities and priorities[0].get("zones") else "N/A"
+                    if len(priorities[0].get("zones", [])) > 3:
+                        zones_str += "..."
                     for msg_data in [
-                        {"type": "info", "message": f"📋 Configuration validated: {scan_req.vmCount}x {scan_req.machineType}"},
-                        {"type": "info", "message": f"📋 Methods: {methods_str} | Zones: {zones_str}..."},
-                        {"type": "info", "message": "⚠️ This is a hosted demo version of Capacity Radar."},
-                        {"type": "info", "message": "🚫 Due to cost and capacity constraints, actual GPU/TPU deployment is disabled in this version."},
-                        {"type": "info", "message": "💡 To enable full scanning & deployment:"},
-                        {"type": "info", "message": "   1. Clone the repo: git clone https://github.com/MG-Cafe/capacity_radar.git"},
-                        {"type": "info", "message": "   2. Authenticate: gcloud auth application-default login"},
-                        {"type": "info", "message": "   3. Run locally: cd backend && python3 main.py"},
-                        {"type": "info", "message": "   4. Open http://localhost:8000 and configure your GCP project"},
-                        {"type": "info", "message": "📊 The Advisory tab (capacity checks) is fully functional in this demo!"},
-                        {"type": "failed", "message": "🛑 Scan stopped — deployment disabled in demo mode.", "status": "failed"},
+                        {"type": "info", "message": f"Configuration validated: {scan_req.vmCount}x {scan_req.machineType}"},
+                        {"type": "info", "message": f"Methods: {methods_str} | Zones: {zones_str}"},
+                        {"type": "demo_notice", "message": "Demo Mode — Deployment Disabled", "details": {
+                            "description": "This is a hosted demo. Actual GPU/TPU deployment is disabled to avoid costs.",
+                            "steps": [
+                                "git clone https://github.com/MG-Cafe/capacity_radar.git",
+                                "gcloud auth application-default login",
+                                "cd backend && python3 main.py",
+                                "Open http://localhost:8000",
+                            ],
+                            "note": "The Advisory tab (capacity checks) is fully functional in this demo.",
+                        }},
+                        {"type": "cancelled", "message": "Scan stopped — deployment disabled in demo mode."},
                     ]:
                         msg_data["sessionId"] = session.session_id
                         msg_data["timestamp"] = ts
                         await websocket.send_json(msg_data)
-                        await asyncio.sleep(0.3)
+                        await asyncio.sleep(0.15)
                     continue
 
                 # Run hunting as background task so cancel messages can be received
