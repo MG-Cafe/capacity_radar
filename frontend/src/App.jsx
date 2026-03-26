@@ -460,29 +460,47 @@ export default function App() {
             This is a hosted demo of <strong>Capacity Radar</strong>. Authentication, project switching,
             and GPU/TPU deployment are disabled in this version.
           </Typography>
-          <Typography variant="body2" sx={{ mb: 1.5, fontWeight: 500 }}>
-            To use your own project with full functionality:
+
+          <Typography variant="body2" sx={{ mb: 0.5, fontWeight: 600, color: '#3c4043' }}>
+            Prerequisites
+          </Typography>
+          <Typography variant="caption" sx={{ display: 'block', mb: 1.5, color: '#5f6368', lineHeight: 1.5 }}>
+            Python 3.10+ &bull; Node.js 18+ &amp; npm &bull; Google Cloud SDK (gcloud) &bull; A GCP project with Compute Engine API enabled
+          </Typography>
+
+          <Typography variant="body2" sx={{ mb: 1, fontWeight: 600, color: '#3c4043' }}>
+            Quick Start
           </Typography>
           <Box sx={{ bgcolor: '#f8f9fa', borderRadius: 1, p: 2, border: '1px solid #e8eaed' }}>
             {[
-              { step: '1', cmd: `git clone ${repoUrl || 'https://github.com/MG-Cafe/capacity_radar.git'}` },
-              { step: '2', cmd: 'cd capacity_radar && cat README.md' },
-              { step: '3', cmd: 'gcloud auth application-default login' },
-              { step: '4', cmd: 'cd backend && python3 main.py' },
-            ].map(({ step, cmd }) => (
-              <Box key={step} sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
-                <Chip label={step} size="small" sx={{ height: 20, width: 20, fontSize: '0.65rem', bgcolor: '#1a73e8', color: '#fff' }} />
-                <code style={{ flex: 1, fontSize: '0.78rem', background: '#e8eaed', padding: '4px 8px', borderRadius: 4 }}>{cmd}</code>
-                <IconButton size="small" onClick={() => copyCmd(cmd)} sx={{ p: 0.3 }}>
-                  <ContentCopyIcon sx={{ fontSize: 14 }} />
-                </IconButton>
+              { step: '1', label: 'Clone the repo', cmd: `git clone ${repoUrl || 'https://github.com/MG-Cafe/capacity_radar.git'} && cd capacity_radar` },
+              { step: '2', label: 'Authenticate', cmd: 'gcloud auth application-default login' },
+              { step: '3', label: 'Set project (optional)', cmd: 'gcloud config set project YOUR_PROJECT_ID' },
+              { step: '4', label: 'Install backend deps', cmd: 'cd backend && pip install -r requirements.txt' },
+              { step: '5', label: 'Build frontend', cmd: 'cd ../frontend && npm install && npm run build' },
+              { step: '6', label: 'Run the app', cmd: 'cd ../backend && python main.py' },
+            ].map(({ step, label, cmd }) => (
+              <Box key={step} sx={{ mb: 1.2 }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mb: 0.3 }}>
+                  <Chip label={step} size="small" sx={{ height: 18, minWidth: 18, fontSize: '0.6rem', bgcolor: '#1a73e8', color: '#fff' }} />
+                  <Typography variant="caption" sx={{ fontWeight: 600, color: '#3c4043', fontSize: '0.72rem' }}>{label}</Typography>
+                </Box>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, ml: 3 }}>
+                  <code style={{ flex: 1, fontSize: '0.72rem', background: '#e8eaed', padding: '4px 8px', borderRadius: 4, color: '#3c4043' }}>{cmd}</code>
+                  <IconButton size="small" onClick={() => copyCmd(cmd)} sx={{ p: 0.3 }}>
+                    <ContentCopyIcon sx={{ fontSize: 13 }} />
+                  </IconButton>
+                </Box>
               </Box>
             ))}
           </Box>
-          <Alert severity="info" sx={{ mt: 2, py: 0.5 }}>
+          <Typography variant="caption" sx={{ display: 'block', mt: 1.5, color: '#5f6368' }}>
+            The app will be available at <strong>http://localhost:8000</strong>
+          </Typography>
+          <Alert severity="info" sx={{ mt: 1.5, py: 0.5 }}>
             <Typography variant="caption">
-              The <strong>Capacity Advisory</strong> tab (DWS Calendar & Spot VM checks) is fully functional in this demo.
-              Only deployment and project configuration are restricted.
+              The <strong>Capacity Advisory</strong> tab is fully functional in this demo.
+              Only deployment (Scan &amp; Deploy) and project configuration are restricted.
             </Typography>
           </Alert>
         </DialogContent>

@@ -424,11 +424,13 @@ async def websocket_scan(websocket: WebSocket):
                         {"type": "info", "message": f"Configuration validated: {scan_req.vmCount}x {scan_req.machineType}"},
                         {"type": "info", "message": f"Methods: {methods_str} | Zones: {zones_str}"},
                         {"type": "demo_notice", "message": "Demo Mode — Deployment Disabled", "details": {
-                            "description": "This is a hosted demo. Actual GPU/TPU deployment is disabled to avoid costs.",
+                            "description": "This is a hosted demo. GPU/TPU deployment is disabled. To run with full features:",
                             "steps": [
-                                "git clone https://github.com/MG-Cafe/capacity_radar.git",
+                                "git clone https://github.com/MG-Cafe/capacity_radar.git && cd capacity_radar",
                                 "gcloud auth application-default login",
-                                "cd backend && python3 main.py",
+                                "cd backend && pip install -r requirements.txt",
+                                "cd ../frontend && npm install && npm run build",
+                                "cd ../backend && python main.py",
                                 "Open http://localhost:8000",
                             ],
                             "note": "The Advisory tab (capacity checks) is fully functional in this demo.",
