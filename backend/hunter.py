@@ -54,8 +54,22 @@ def _get_adc_token() -> str:
 
 
 async def get_access_token() -> str:
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, _get_adc_token)
+
+
+def _normalize_datetime(dt_str: str) -> str:
+    """Normalize a datetime string to ISO 8601 with seconds and Z suffix."""
+    dt_str = dt_str.strip()
+    if dt_str.endswith("Z"):
+        dt_str = dt_str[:-1]
+    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M"):
+        try:
+            dt = datetime.strptime(dt_str, fmt)
+            return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+        except ValueError:
+            continue
+    return dt_str if dt_str.endswith("Z") else dt_str + "Z"
 
 
 class ScanningSession:
@@ -82,14 +96,18 @@ class ScanningSession:
         self.cancelled = False
         self.result = None
         self._token = None
+        self._token_time = None
 
     async def _get_token(self) -> str:
-        if not self._token:
+        now = datetime.now(timezone.utc)
+        if not self._token or not self._token_time or (now - self._token_time).total_seconds() > 3000:
             self._token = await get_access_token()
+            self._token_time = now
         return self._token
 
     async def _refresh_token(self):
         self._token = await get_access_token()
+        self._token_time = datetime.now(timezone.utc)
 
     async def emit(self, msg_type: str, message: str, data: dict = None):
         update = {
@@ -277,9 +295,11 @@ class ScanningSession:
 
             if success:
                 self.status = ScanningStatus.SUCCESS
+                actual_count = self.result.get("vm_count", self.vm_count) if self.result else self.vm_count
                 await self.emit("success",
-                    f"✅ Scan successful! Secured {self.vm_count}x {self.machine_type} via {method_label}.",
+                    f"✅ Scan successful! Secured {actual_count}x {self.machine_type} via {method_label}.",
                     {"method": method, "priority": priority_num, "result": self.result})
+                _schedule_session_cleanup(self.session_id)
                 return
 
             await self.emit("priority_exhausted",
@@ -289,6 +309,7 @@ class ScanningSession:
         self.status = ScanningStatus.FAILED
         await self.emit("failed",
             f"❌ Scan failed. All priorities exhausted for {self.vm_count}x {self.machine_type}.")
+        _schedule_session_cleanup(self.session_id)
 
     async def _run_parallel(self):
         supported_zones = get_zones_for_machine_type(self.machine_type)
@@ -312,6 +333,10 @@ class ScanningSession:
                 "retry_interval": priority.get("retry_interval", 60),
                 "label": method_label, "priority": pi + 1,
                 "name_prefix": name_prefix,
+                "flex_max_wait_hours": priority.get("flex_max_wait_hours", 168),
+                "flex_usage_duration_hours": priority.get("flex_usage_duration_hours", 24),
+                "calendar_start_time": priority.get("calendar_start_time", ""),
+                "calendar_end_time": priority.get("calendar_end_time", ""),
             })
 
         if not tasks_info:
@@ -344,8 +369,18 @@ class ScanningSession:
                         {"attempt": attempt, "zone": zone, "method": method})
                     try:
                         await self._refresh_token()
-                        success = await self._dispatch_method(method, zone, name_prefix)
+                        success = await self._dispatch_method(
+                            method, zone, name_prefix,
+                            task_info.get("flex_max_wait_hours", 168),
+                            task_info.get("flex_usage_duration_hours", 24),
+                            task_info.get("calendar_start_time", ""),
+                            task_info.get("calendar_end_time", ""),
+                        )
                         if success:
+                            if winner_event.is_set():
+                                await self.emit("warning",
+                                    f"[{method_label}] Created resource in {zone} but another method already won.")
+                                return False
                             winner_result["method"] = method_label
                             winner_event.set()
                             return True
@@ -368,8 +403,9 @@ class ScanningSession:
 
         if any_success:
             self.status = ScanningStatus.SUCCESS
+            actual_count = self.result.get("vm_count", self.vm_count) if self.result else self.vm_count
             await self.emit("success",
-                f"✅ Scan successful! Secured {self.vm_count}x {self.machine_type} "
+                f"✅ Scan successful! Secured {actual_count}x {self.machine_type} "
                 f"via {winner_result['method']} (parallel).",
                 {"result": self.result})
         elif self.cancelled:
@@ -378,6 +414,7 @@ class ScanningSession:
         else:
             self.status = ScanningStatus.FAILED
             await self.emit("failed", f"❌ All {len(tasks_info)} parallel methods exhausted.")
+        _schedule_session_cleanup(self.session_id)
 
     async def _scan_with_method(self, method, zones, max_retries, retry_interval,
                                  priority_num, name_prefix="",
@@ -512,13 +549,13 @@ class ScanningSession:
 
         # Use per-priority start/end times if provided, otherwise fallback
         if calendar_start_time:
-            start_str = calendar_start_time.replace("T", "T") + ":00Z" if "Z" not in calendar_start_time else calendar_start_time
+            start_str = _normalize_datetime(calendar_start_time)
         else:
             start_time = datetime.now(timezone.utc) + timedelta(hours=1)
             start_str = start_time.strftime("%Y-%m-%dT%H:%M:%SZ")
 
         if calendar_end_time:
-            end_str = calendar_end_time.replace("T", "T") + ":00Z" if "Z" not in calendar_end_time else calendar_end_time
+            end_str = _normalize_datetime(calendar_end_time)
         else:
             end_time = datetime.now(timezone.utc) + timedelta(hours=self.dws_calendar_duration_hours + 1)
             end_str = end_time.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -527,21 +564,21 @@ class ScanningSession:
             f"📡 Creating DWS Calendar future reservation '{res_name}' in {zone} "
             f"({start_str} → {end_str})...")
 
-        url = (f"https://compute.googleapis.com/compute/beta/projects/{self.project}"
+        url = (f"https://compute.googleapis.com/compute/v1/projects/{self.project}"
                f"/zones/{zone}/futureReservations")
         prefix_tag = name_prefix if name_prefix else f"gpu-radar-{self.session_id[:8]}"
-        # Multi-node GPU families need deploymentType and specific reservation
+        # Calendar mode requires DENSE for all GPU VMs and specificReservationRequired=true
         from gpu_data import MACHINE_TO_FAMILY
         family = MACHINE_TO_FAMILY.get(self.machine_type, "")
-        needs_specific = family in ("A4", "A3 Ultra", "A4X", "A4X Max")
-        needs_dense = family in ("A4", "A3 Ultra", "A3 Mega", "A3 High", "A4X", "A4X Max")
+        dense_families = ("A4", "A3 Ultra", "A3 Mega", "A3 High", "A3 Edge")
         body = {
             "name": res_name,
             "autoDeleteAutoCreatedReservations": True,
-            "specificReservationRequired": needs_specific,
+            "specificReservationRequired": True,
             "planningStatus": "SUBMITTED",
+            "reservationMode": "CALENDAR",
+            "reservationName": f"{prefix_tag}-rsv",
             "namePrefix": prefix_tag,
-            "deploymentType": "DENSE" if needs_dense else "DEFAULT",
             "specificSkuProperties": {
                 "totalCount": str(self.vm_count),
                 "instanceProperties": {"machineType": self.machine_type}
@@ -549,6 +586,8 @@ class ScanningSession:
             "timeWindow": {"startTime": start_str, "endTime": end_str},
             "shareSettings": {"shareType": "LOCAL"},
         }
+        if family in dense_families:
+            body["deploymentType"] = "DENSE"
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
         try:
@@ -584,15 +623,14 @@ class ScanningSession:
             return False
 
     async def _poll_future_reservation_status(self, zone: str, name: str,
-                                                max_polls: int = 0,
+                                                max_polls: int = 360,
                                                 poll_interval: int = 30) -> bool:
-        """Poll a future reservation indefinitely until APPROVED or REJECTED.
-        No counter limit — keeps polling until a terminal status is reached."""
+        """Poll a future reservation until APPROVED, REJECTED, or max_polls reached."""
         await self.emit("info",
-            f"⏳ Polling future reservation '{name}' until Google approves or rejects "
-            f"(checking every {poll_interval}s)...")
+            f"⏳ Polling future reservation '{name}' "
+            f"(every {poll_interval}s, max {max_polls} polls)...")
         poll_num = 0
-        while True:
+        while max_polls <= 0 or poll_num < max_polls:
             if self.cancelled:
                 return False
             await asyncio.sleep(poll_interval)
@@ -629,6 +667,11 @@ class ScanningSession:
                 if poll_num % 6 == 0:
                     await self.emit("info", f"⏳ Poll error: {str(e)[:80]}")
 
+        await self.emit("warning",
+            f"⚠️ Future reservation '{name}' not resolved after "
+            f"{poll_num * poll_interval}s. Check GCP Console.")
+        return False
+
     async def _try_dws_flex_rest(self, zone: str, name_prefix: str = "",
                                   flex_max_wait_hours: int = 168,
                                   flex_usage_duration_hours: int = 24) -> bool:
@@ -645,7 +688,7 @@ class ScanningSession:
             f"📡 [DWS Flex] Trying reservation '{res_name}' in {zone} "
             f"(usage: {flex_usage_duration_hours}h)...")
 
-        url = (f"https://compute.googleapis.com/compute/beta/projects/{self.project}"
+        url = (f"https://compute.googleapis.com/compute/v1/projects/{self.project}"
                f"/zones/{zone}/reservations")
         body = {
             "name": res_name,
@@ -654,7 +697,7 @@ class ScanningSession:
                 "instanceProperties": {"machineType": self.machine_type}
             },
             "specificReservationRequired": True,
-            "autoCreatedReservationsDeleteTime": end_str,
+            "deleteAtTime": end_str,
         }
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
@@ -699,20 +742,18 @@ class ScanningSession:
             f"📡 Creating future reservation '{res_name}' in {zone} (flex-like, "
             f"{start_str} → {end_str})...")
 
-        url = (f"https://compute.googleapis.com/compute/beta/projects/{self.project}"
+        url = (f"https://compute.googleapis.com/compute/v1/projects/{self.project}"
                f"/zones/{zone}/futureReservations")
         prefix_tag = name_prefix if name_prefix else f"gpu-radar-{self.session_id[:8]}"
         from gpu_data import MACHINE_TO_FAMILY
         family = MACHINE_TO_FAMILY.get(self.machine_type, "")
-        needs_specific = family in ("A4", "A3 Ultra", "A4X", "A4X Max")
-        needs_dense = family in ("A4", "A3 Ultra", "A3 Mega", "A3 High", "A4X", "A4X Max")
+        dense_families = ("A4", "A3 Ultra", "A3 Mega", "A3 High", "A3 Edge")
         body = {
             "name": res_name,
             "autoDeleteAutoCreatedReservations": True,
-            "specificReservationRequired": needs_specific,
+            "specificReservationRequired": True,
             "planningStatus": "SUBMITTED",
             "namePrefix": prefix_tag,
-            "deploymentType": "DENSE" if needs_dense else "DEFAULT",
             "specificSkuProperties": {
                 "totalCount": str(self.vm_count),
                 "instanceProperties": {"machineType": self.machine_type}
@@ -720,6 +761,8 @@ class ScanningSession:
             "timeWindow": {"startTime": start_str, "endTime": end_str},
             "shareSettings": {"shareType": "LOCAL"},
         }
+        if family in dense_families:
+            body["deploymentType"] = "DENSE"
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
         try:
@@ -932,7 +975,7 @@ class ScanningSession:
                             await self.emit("info",
                                 f"✅ [{label}] Queued resource '{qr_name}' is ACTIVE — TPU deployed!")
                             return True
-                        elif state in ("FAILED", "SUSPENDED", "DELETEING"):
+                        elif state in ("FAILED", "SUSPENDED", "DELETING"):
                             info_str = data.get("state", {}).get("stateInitiator", "")
                             await self.emit("warning",
                                 f"⚠️ [{label}] Queued resource '{qr_name}' state: {state} ({info_str})")
@@ -1019,13 +1062,13 @@ class ScanningSession:
         accel_type = self._get_tpu_accelerator_type(zone)
 
         if calendar_start_time:
-            start_str = calendar_start_time + ":00Z" if "Z" not in calendar_start_time else calendar_start_time
+            start_str = _normalize_datetime(calendar_start_time)
         else:
             start_time = datetime.now(timezone.utc) + timedelta(hours=1)
             start_str = start_time.strftime("%Y-%m-%dT%H:%M:%SZ")
 
         if calendar_end_time:
-            end_str = calendar_end_time + ":00Z" if "Z" not in calendar_end_time else calendar_end_time
+            end_str = _normalize_datetime(calendar_end_time)
         else:
             end_time = datetime.now(timezone.utc) + timedelta(hours=self.dws_calendar_duration_hours + 1)
             end_str = end_time.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -1048,7 +1091,7 @@ class ScanningSession:
                 }]
             },
             "queueingPolicy": {
-                "validUntilTimestamp": end_str,
+                "validUntilTime": end_str,
             },
             "guaranteed": {
                 "reserved": True,
@@ -1171,6 +1214,15 @@ class ScanningSession:
 
 # ── Session management ─────────────────────────────────────────────────
 active_sessions: dict[str, ScanningSession] = {}
+
+
+def _schedule_session_cleanup(session_id: str, delay: int = 300):
+    """Remove session from active_sessions after a delay."""
+    try:
+        loop = asyncio.get_running_loop()
+        loop.call_later(delay, lambda: active_sessions.pop(session_id, None))
+    except RuntimeError:
+        active_sessions.pop(session_id, None)
 
 
 def create_session(project, machine_type, vm_count, priorities, send_update,

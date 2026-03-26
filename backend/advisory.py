@@ -26,18 +26,77 @@ def _get_adc_token() -> str:
 
 async def get_gcloud_access_token() -> str:
     """Get access token using ADC (runs in thread to avoid blocking)."""
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, _get_adc_token)
+
+
+def _compute_time_window(start_date: str, flexibility_days: int, duration_days: int):
+    """Compute API time window from simplified user inputs.
+    Returns (start_str, end_str) as ISO 8601 UTC strings.
+    """
+    if start_date:
+        base = datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    else:
+        base = datetime.now(timezone.utc) + timedelta(days=1)
+
+    start_str = base.strftime("%Y-%m-%dT00:00:00Z")
+    end_date = base + timedelta(days=flexibility_days)
+    end_str = end_date.strftime("%Y-%m-%dT23:59:59Z")
+    return start_str, end_str
+
+
+def _resolve_regions_zones(regions, zones):
+    """Derive target regions and allowed zones from user input."""
+    target_regions = set()
+    allowed_zones = set(zones) if zones else set()
+    if zones:
+        for z in zones:
+            region = z.rsplit("-", 1)[0]
+            target_regions.add(region)
+    if regions:
+        target_regions.update(regions)
+    return target_regions, allowed_zones
+
+
+def _check_tpu(machine_type: str, results: dict) -> bool:
+    """If machine_type is a TPU, populate results with TPU info and return True."""
+    from gpu_data import TPU_TYPES
+    is_tpu = any(machine_type in t.get("machine_types", {}) for t in TPU_TYPES.values())
+    if not is_tpu:
+        return False
+    tpu_gen = next((k for k, v in TPU_TYPES.items() if machine_type in v.get("machine_types", {})), "")
+    tpu_info = TPU_TYPES.get(tpu_gen, {})
+    zones_list = tpu_info.get("zones", [])
+    supported = tpu_info.get("supported", {})
+    results["tpuInfo"] = {
+        "type": tpu_gen,
+        "name": tpu_info.get("gpu", f"Cloud TPU {tpu_gen}"),
+        "machineType": machine_type,
+        "zones": zones_list,
+        "regions": sorted(set(z.rsplit("-", 1)[0] for z in zones_list)),
+        "topologies": tpu_info.get("topologies", []),
+        "supported": supported,
+        "specs": tpu_info.get("machine_types", {}).get(machine_type, {}),
+    }
+    results["message"] = (
+        f"Calendar Advisory API is not available for TPU types. "
+        f"However, {tpu_info.get('gpu', tpu_gen)} ({machine_type}) supports: "
+        f"{'On-Demand, ' if supported.get('on_demand') else ''}"
+        f"{'Spot, ' if supported.get('spot') else ''}"
+        f"{'DWS Calendar, ' if supported.get('dws_calendar') else ''}"
+        f"{'DWS Flex' if supported.get('dws_flex') else ''}"
+        f". Available in {len(zones_list)} zone(s) across {len(set(z.rsplit('-', 1)[0] for z in zones_list))} region(s)."
+    )
+    return True
 
 
 async def get_calendar_advisory(
     project: str,
     machine_type: str,
     vm_count: int,
-    duration_min_days: int = 1,
-    duration_max_days: int = 7,
-    start_from: str = "",
-    start_to: str = "",
+    start_date: str = "",
+    flexibility_days: int = 0,
+    duration_days: int = 7,
     regions: list[str] | None = None,
     zones: list[str] | None = None,
 ) -> dict:
@@ -47,58 +106,12 @@ async def get_calendar_advisory(
     """
     results = {"recommendations": [], "errors": []}
 
-    # TPU machine types are not supported by the Calendar Advisory API
-    from gpu_data import TPU_TYPES
-    is_tpu = any(machine_type in t.get("machine_types", {}) for t in TPU_TYPES.values())
-    if is_tpu:
-        tpu_gen = next((k for k, v in TPU_TYPES.items() if machine_type in v.get("machine_types", {})), "")
-        tpu_info = TPU_TYPES.get(tpu_gen, {})
-        zones_list = tpu_info.get("zones", [])
-        supported = tpu_info.get("supported", {})
-        results["tpuInfo"] = {
-            "type": tpu_gen,
-            "name": tpu_info.get("gpu", f"Cloud TPU {tpu_gen}"),
-            "machineType": machine_type,
-            "zones": zones_list,
-            "regions": sorted(set(z.rsplit("-", 1)[0] for z in zones_list)),
-            "topologies": tpu_info.get("topologies", []),
-            "supported": supported,
-            "specs": tpu_info.get("machine_types", {}).get(machine_type, {}),
-        }
-        results["message"] = (
-            f"Calendar Advisory API is not available for TPU types. "
-            f"However, {tpu_info.get('gpu', tpu_gen)} ({machine_type}) supports: "
-            f"{'On-Demand, ' if supported.get('on_demand') else ''}"
-            f"{'Spot, ' if supported.get('spot') else ''}"
-            f"{'DWS Calendar, ' if supported.get('dws_calendar') else ''}"
-            f"{'DWS Flex' if supported.get('dws_flex') else ''}"
-            f". Available in {len(zones_list)} zone(s) across {len(set(z.rsplit('-', 1)[0] for z in zones_list))} region(s)."
-        )
+    if _check_tpu(machine_type, results):
         return results
 
-    # Calculate time window from dates
-    if start_from:
-        start_str = f"{start_from}T00:00:00Z"
-    else:
-        start_time = datetime.now(timezone.utc) + timedelta(days=1)
-        start_str = start_time.strftime("%Y-%m-%dT%H:%M:%SZ")
+    start_str, end_str = _compute_time_window(start_date, flexibility_days, duration_days)
 
-    if start_to:
-        end_str = f"{start_to}T23:59:59Z"
-    else:
-        end_time = datetime.now(timezone.utc) + timedelta(days=14)
-        end_str = end_time.strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    # If zones provided, derive regions from zones
-    target_regions = set()
-    allowed_zones = set(zones) if zones else set()
-    if zones:
-        for z in zones:
-            region = z.rsplit("-", 1)[0]
-            target_regions.add(region)
-    if regions:
-        target_regions.update(regions)
-
+    target_regions, allowed_zones = _resolve_regions_zones(regions, zones)
     if not target_regions:
         results["errors"].append("No regions or zones specified for calendar advisory.")
         return results
@@ -109,7 +122,7 @@ async def get_calendar_advisory(
     for region in sorted(target_regions):
         tasks.append(_query_calendar_advisory_region(
             token, project, region, machine_type, vm_count,
-            start_str, end_str, duration_min_days, duration_max_days
+            start_str, end_str, duration_days, duration_days
         ))
 
     region_results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -118,11 +131,105 @@ async def get_calendar_advisory(
         if isinstance(result, Exception):
             results["errors"].append(f"{region}: {str(result)}")
         elif result:
-            # Filter results to only include zones in the allowed zones list
             for rec in result:
                 zone = rec.get("zone", "")
                 if not allowed_zones or zone in allowed_zones:
                     results["recommendations"].append(rec)
+
+    return results
+
+
+async def find_best_splits(
+    project: str,
+    machine_type: str,
+    vm_count: int,
+    start_date: str = "",
+    flexibility_days: int = 0,
+    duration_days: int = 7,
+    regions: list[str] | None = None,
+    zones: list[str] | None = None,
+) -> dict:
+    """
+    Query Calendar Advisory at multiple VM counts to find capacity splits.
+    Returns a plan showing what's available at different VM count levels,
+    so users can create multiple smaller reservations.
+    """
+    results = {"splits": [], "fullAvailability": [], "errors": [], "summary": ""}
+
+    if _check_tpu(machine_type, results):
+        return results
+
+    start_str, end_str = _compute_time_window(start_date, flexibility_days, duration_days)
+    target_regions, allowed_zones = _resolve_regions_zones(regions, zones)
+    if not target_regions:
+        results["errors"].append("No regions or zones specified.")
+        return results
+
+    token = await get_gcloud_access_token()
+
+    # Build VM count levels to query: 100%, 75%, 50%, 25%, and 1
+    levels = []
+    seen = set()
+    for pct in [100, 75, 50, 25]:
+        count = max(1, int(vm_count * pct / 100))
+        if count not in seen:
+            seen.add(count)
+            levels.append((count, pct))
+    if 1 not in seen and vm_count > 1:
+        levels.append((1, round(100 / vm_count)))
+
+    # Query all levels x regions in parallel, with minDuration=1 to find any available sub-windows
+    all_tasks = []
+    task_meta = []
+    for count, pct in levels:
+        for region in sorted(target_regions):
+            all_tasks.append(_query_calendar_advisory_region(
+                token, project, region, machine_type, count,
+                start_str, end_str, 1, duration_days
+            ))
+            task_meta.append((count, pct, region))
+
+    all_results = await asyncio.gather(*all_tasks, return_exceptions=True)
+
+    # Group results by VM count level
+    level_recs = {}
+    for (count, pct, region), result in zip(task_meta, all_results):
+        if count not in level_recs:
+            level_recs[count] = {"vmCount": count, "percentOfRequested": pct, "recommendations": []}
+        if isinstance(result, Exception):
+            results["errors"].append(f"{region} ({count} VMs): {str(result)}")
+        elif result:
+            for rec in result:
+                zone = rec.get("zone", "")
+                if not allowed_zones or zone in allowed_zones:
+                    level_recs[count]["recommendations"].append(rec)
+
+    # Build splits list ordered by VM count (highest first)
+    for count, pct in levels:
+        if count in level_recs:
+            results["splits"].append(level_recs[count])
+
+    # Full availability is the 100% level
+    if vm_count in level_recs:
+        results["fullAvailability"] = [
+            r for r in level_recs[vm_count]["recommendations"]
+            if r.get("status") == "RECOMMENDED"
+        ]
+
+    # Build summary
+    summary_parts = []
+    for split in results["splits"]:
+        recommended = [r for r in split["recommendations"] if r.get("status") == "RECOMMENDED"]
+        zones_available = len(set(r.get("zone") for r in recommended))
+        if zones_available > 0:
+            summary_parts.append(
+                f"{split['vmCount']} VMs ({split['percentOfRequested']}%): "
+                f"available in {zones_available} zone(s)"
+            )
+    if summary_parts:
+        results["summary"] = " | ".join(summary_parts)
+    else:
+        results["summary"] = f"No availability found for {machine_type} in the specified time window."
 
     return results
 
@@ -145,23 +252,29 @@ async def _query_calendar_advisory_region(
     min_duration_secs = duration_min_days * 86400
     max_duration_secs = duration_max_days * 86400
 
+    from gpu_data import MACHINE_TO_FAMILY
+    family = MACHINE_TO_FAMILY.get(machine_type, "")
+    dense_families = ("A4", "A3 Ultra", "A3 Mega", "A3 High", "A3 Edge")
+    spec_body = {
+        "targetResources": {
+            "specificSkuResources": {
+                "instanceCount": str(vm_count),
+                "machineType": machine_type,
+            }
+        },
+        "timeRangeSpec": {
+            "minDuration": f"{min_duration_secs}s",
+            "maxDuration": f"{max_duration_secs}s",
+            "startTimeNotEarlierThan": start_time,
+            "startTimeNotLaterThan": end_time,
+        },
+    }
+    if family in dense_families:
+        spec_body["deploymentType"] = "DENSE"
+
     body = {
         "futureResourcesSpecs": {
-            "spec": {
-                "deploymentType": "DENSE",
-                "targetResources": {
-                    "specificSkuResources": {
-                        "instanceCount": str(vm_count),
-                        "machineType": machine_type,
-                    }
-                },
-                "timeRangeSpec": {
-                    "minDuration": f"{min_duration_secs}s",
-                    "maxDuration": f"{max_duration_secs}s",
-                    "startTimeNotEarlierThan": start_time,
-                    "startTimeNotLaterThan": end_time,
-                },
-            }
+            "spec": spec_body,
         }
     }
 
@@ -181,50 +294,51 @@ async def _query_calendar_advisory_region(
                 # Parse the response format from the API
                 for rec_group in data.get("recommendations", []):
                     rps = rec_group.get("recommendationsPerSpec", {})
-                    spec = rps.get("spec", {})
-                    rec_id = spec.get("recommendationId", "")
-                    rec_type = spec.get("recommendationType", "")
+                    # rps is a map: arbitrary key -> FutureResourcesRecommendation
+                    for _spec_key, spec in rps.items():
+                        rec_id = spec.get("recommendationId", "")
+                        rec_type = spec.get("recommendationType", "")
 
-                    # Parse recommended locations
-                    for loc_key, loc_data in spec.get("recommendedLocations", {}).items():
-                        zone = loc_key.replace("zones/", "")
-                        recommendations.append({
-                            "region": region,
-                            "zone": zone,
-                            "machineType": machine_type,
-                            "vmCount": vm_count,
-                            "status": "RECOMMENDED",
-                            "startTime": loc_data.get("startTime", start_time),
-                            "endTime": loc_data.get("endTime", end_time),
-                            "confidence": "HIGH",
-                            "source": "DWS Calendar Advisory",
-                            "recommendationType": rec_type,
-                        })
+                        # Primary recommended location
+                        location = spec.get("location", "")
+                        if location:
+                            zone = location.replace("zones/", "")
+                            recommendations.append({
+                                "region": region,
+                                "zone": zone,
+                                "machineType": machine_type,
+                                "vmCount": vm_count,
+                                "status": "RECOMMENDED",
+                                "startTime": spec.get("startTime", start_time),
+                                "endTime": spec.get("endTime", end_time),
+                                "confidence": "HIGH",
+                                "source": "DWS Calendar Advisory",
+                                "recommendationType": rec_type,
+                            })
 
-                    # Parse other locations — some may still have RECOMMENDED status
-                    for loc_key, loc_data in spec.get("otherLocations", {}).items():
-                        zone = loc_key.replace("zones/", "")
-                        status = loc_data.get("status", "UNKNOWN")
-                        details = loc_data.get("details", "")
-                        # GCP sometimes puts RECOMMENDED zones in otherLocations
-                        if status == "RECOMMENDED":
-                            confidence = "MODERATE"
-                        elif status == "NO_CAPACITY":
-                            confidence = "NONE"
-                        elif status == "NOT_SUPPORTED":
-                            confidence = "LOW"
-                        else:
-                            confidence = "LOW"
-                        recommendations.append({
-                            "region": region,
-                            "zone": zone,
-                            "machineType": machine_type,
-                            "vmCount": vm_count,
-                            "status": status,
-                            "details": details,
-                            "startTime": start_time,
-                            "endTime": end_time,
-                            "confidence": confidence,
+                        # Other locations with their status
+                        for loc_key, loc_data in spec.get("otherLocations", {}).items():
+                            zone = loc_key.replace("zones/", "")
+                            status = loc_data.get("status", "UNKNOWN")
+                            details = loc_data.get("details", "")
+                            if status == "RECOMMENDED":
+                                confidence = "MODERATE"
+                            elif status == "NO_CAPACITY":
+                                confidence = "NONE"
+                            elif status == "NOT_SUPPORTED":
+                                confidence = "LOW"
+                            else:
+                                confidence = "LOW"
+                            recommendations.append({
+                                "region": region,
+                                "zone": zone,
+                                "machineType": machine_type,
+                                "vmCount": vm_count,
+                                "status": status,
+                                "details": details,
+                                "startTime": start_time,
+                                "endTime": end_time,
+                                "confidence": confidence,
                             "source": "DWS Calendar Advisory",
                             "recommendationType": rec_type,
                         })

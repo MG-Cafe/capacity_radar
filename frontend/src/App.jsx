@@ -45,6 +45,7 @@ export default function App() {
   const [authChecking, setAuthChecking] = useState(false)
   const [loginInProgress, setLoginInProgress] = useState(false)
   const [loginSuccess, setLoginSuccess] = useState(false)
+  const [loginError, setLoginError] = useState(null)
   const [drawerOpen, setDrawerOpen] = useState(true)
 
   useEffect(() => {
@@ -86,6 +87,7 @@ export default function App() {
   const handleLogin = useCallback(async () => {
     setLoginInProgress(true)
     setLoginSuccess(false)
+    setLoginError(null)
     try {
       const resp = await fetch('/api/auth/login', { method: 'POST' })
       const data = await resp.json()
@@ -94,9 +96,11 @@ export default function App() {
         if (projectInput.trim()) {
           setTimeout(() => checkAuth(), 500)
         }
+      } else {
+        setLoginError(data.message || 'Authentication failed.')
       }
     } catch (e) {
-      // ignore
+      setLoginError('Failed to connect to backend.')
     } finally {
       setLoginInProgress(false)
     }
@@ -242,6 +246,11 @@ export default function App() {
                 {loginInProgress ? 'Complete in browser...' :
                  loginSuccess ? 'Authenticated ✓' : 'Authenticate with Google'}
               </Button>
+              {loginError && (
+                <Alert severity="error" sx={{ mt: 1, py: 0.25, '& .MuiAlert-message': { fontSize: '0.7rem' } }}>
+                  {loginError}
+                </Alert>
+              )}
             </Box>
 
             {/* Step 2: Project + Connect — disabled until Step 1 done */}
@@ -356,9 +365,7 @@ export default function App() {
           {/* Footer */}
           <Box sx={{ p: 1.5, borderTop: 1, borderColor: 'divider' }}>
             <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.65rem', display: 'block', textAlign: 'center' }}>
-              Created by <strong>Mohammad Ghodratigohar</strong>
-              <br />
-              <a href="mailto:emgi@google.com" style={{ color: '#1a73e8', textDecoration: 'none' }}>emgi@google.com</a>
+              Capacity Radar &mdash; GPU/TPU Capacity Hunting Tool
             </Typography>
           </Box>
         </Drawer>

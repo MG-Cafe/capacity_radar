@@ -1,44 +1,74 @@
-# 🎯 Capacity Radar
+# Capacity Radar
 
 **Priority-based GPU/TPU capacity scanning and deployment tool for Google Cloud Platform.**
 
-Capacity Radar automates the process of finding and securing GPU/TPU capacity across Google Cloud zones. It supports multiple consumption models — On-Demand Reservations, DWS Calendar, DWS Flex Start, and Spot VMs — and lets you define a priority-based strategy that tries each method in order until capacity is secured.
+Capacity Radar automates finding and securing GPU/TPU capacity across Google Cloud zones. It supports multiple consumption models — On-Demand Reservations, DWS Calendar, DWS Flex Start, and Spot VMs — and lets you define a priority-based strategy that tries each method in order until capacity is secured.
 
-![Capacity Radar](https://img.shields.io/badge/Google%20Cloud-GPU%20%2F%20TPU-4285F4?logo=google-cloud&logoColor=white)
+![Google Cloud](https://img.shields.io/badge/Google%20Cloud-GPU%20%2F%20TPU-4285F4?logo=google-cloud&logoColor=white)
 ![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)
 ![React](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=black)
+![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-009688?logo=fastapi&logoColor=white)
 
 ---
 
-## ✨ Features
+## Features
 
-### 🔍 Scan & Deploy
+### Scan & Deploy
 - **Priority-based scanning** — Define up to 4 priorities (e.g., try On-Demand first, then DWS Calendar, then Spot)
-- **Multi-zone scanning** — Automatically tries all supported zones for your chosen machine type
-- **Real-time progress** — WebSocket-based live updates with detailed logs
+- **Multi-zone scanning** — Automatically tries all supported zones for the chosen machine type
+- **Real-time progress** — WebSocket-based live updates with detailed step-by-step logs
 - **Sequential or Parallel** execution modes
-- **Custom naming** — Set resource name prefixes for your reservations and VMs
+- **Custom naming** — Set resource name prefixes for reservations and VMs
+- **Cancel anytime** — Cancel a running scan and the tool stops gracefully
 
-### 📋 Consumption Models
-| Model | Description |
-|-------|-------------|
-| **On-Demand Reservation** | Reserve capacity at on-demand rates. Immediate if available. |
-| **DWS Calendar Mode** | Book capacity for a specific time window (future reservation). Requires Google approval. |
-| **DWS Flex Start** | Queue for capacity; the system keeps retrying until GPUs become available. For TPUs, uses Queued Resources with configurable max wait time. |
-| **Spot VMs** | Spare capacity at discount. Can be preempted at any time. |
+### Consumption Models
 
-### 📊 Advisory Tab
-- **DWS Calendar Advisory** — Query the Calendar Mode Advisory API to find optimal zones and time windows for future reservations
-- **Spot VM Advisory** — Check spot capacity availability across zones
+| Model | Description | GPU Families |
+|-------|-------------|--------------|
+| **On-Demand Reservation** | Reserve capacity at on-demand rates. Immediate if available. | A3 Edge/Mega/High, A2, G2, G4 |
+| **DWS Calendar Mode** | Book capacity for a specific time window as a future reservation. Uses DENSE deployment for multi-node GPU families. | A4, A3 Ultra/Mega/High/Edge |
+| **DWS Flex Start** | Queue for capacity; retries until GPUs become available. For TPUs, uses Queued Resources with configurable max wait time. | A4, A3, A4X |
+| **Spot VMs** | Spare capacity at discount. Can be preempted at any time. | All GPU families |
 
-### 🖥️ Supported Hardware
-- **GPU families**: A4 Mega (B200), A3 Ultra (H200 SXM), A3 Mega (H100 Mega), A3 High (H100 80GB), A2 Ultra (A100 80GB), A2 (A100 40GB), G2 (L4), and more
-- **TPU types**: v6e, v5e, v5p, v4, v3
-- **Full zone support** — Automatically maps machine types to their available zones
+### Capacity Advisory
+
+- **DWS Calendar Advisory** — Query the Calendar Mode Advisory API to find optimal zones and time windows
+  - **Check Availability** — Query with your exact parameters (start date, flexibility, duration)
+  - **Find Best Plan** — Queries at multiple VM count levels (100%, 75%, 50%, 25%, 1 VM) to show how to split capacity across multiple smaller reservations
+- **Spot VM Advisory** — Check spot capacity availability and preemption risk across zones
+
+### Supported Hardware
+
+**GPU Families:**
+
+| Family | GPU | Machine Types | DWS Calendar | Spot | On-Demand |
+|--------|-----|---------------|:------------:|:----:|:---------:|
+| A4X Max | NVIDIA GB300 | `a4x-maxgpu-4g-metal` | - | Yes | - |
+| A4X | NVIDIA GB200 | `a4x-highgpu-4g` | - | Yes | Yes |
+| A4 | NVIDIA B200 | `a4-highgpu-8g` | Yes (DENSE) | Yes | - |
+| A3 Ultra | NVIDIA H200 | `a3-ultragpu-8g` | Yes (DENSE) | Yes | - |
+| A3 Edge | NVIDIA H100 | `a3-edgegpu-8g` | Yes (DENSE) | Yes | Yes |
+| A3 Mega | NVIDIA H100 | `a3-megagpu-8g` | Yes (DENSE) | Yes | Yes |
+| A3 High | NVIDIA H100 | `a3-highgpu-{1,2,4,8}g` | Yes (DENSE) | Yes | Yes |
+| A2 Ultra | NVIDIA A100 80GB | `a2-ultragpu-{1,2,4,8}g` | - | Yes | Yes |
+| A2 Standard | NVIDIA A100 40GB | `a2-highgpu-{1,2,4,8}g` | - | Yes | Yes |
+| G4 | NVIDIA RTX PRO 6000 | `g4-standard-{6..384}` | - | Yes | Yes |
+| G2 | NVIDIA L4 | `g2-standard-{4..96}` | - | Yes | Yes |
+
+**TPU Types:**
+
+| Type | Zones | DWS Calendar | Spot |
+|------|-------|:------------:|:----:|
+| v6e (Trillium) | 7 zones | Yes | Yes |
+| v5p | 3 zones | Yes | Yes |
+| v5e | 5 zones | Yes | Yes |
+| v4 | 1 zone | - | Yes |
+| v3 | 3 zones | - | Yes |
+| v2 | 5 zones | - | Yes |
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
 ### Prerequisites
 
@@ -57,10 +87,10 @@ cd capacity_radar
 ### 2. Authenticate with Google Cloud
 
 ```bash
-# Login with your Google account
+# Login with your Google account (sets up Application Default Credentials)
 gcloud auth application-default login
 
-# Set your default project (optional)
+# Set your project (optional — you can also enter it in the UI)
 gcloud config set project YOUR_PROJECT_ID
 ```
 
@@ -88,102 +118,155 @@ python main.py
 
 The app will be available at **http://localhost:8000**
 
+### Development Mode (Hot Reload)
+
+For frontend development with hot reload:
+
+```bash
+# Terminal 1: Backend
+cd backend && python main.py
+
+# Terminal 2: Frontend dev server (proxied to backend)
+cd frontend && npm run dev
+```
+
+Frontend dev server runs on http://localhost:3000 with API proxy to :8000.
+
 ---
 
-## 🏗️ Architecture
+## Architecture
 
 ```
 capacity_radar/
 ├── backend/
-│   ├── main.py              # FastAPI server, REST + WebSocket endpoints
+│   ├── main.py              # FastAPI server — REST + WebSocket endpoints
 │   ├── hunter.py            # Core scanning engine (GPU & TPU deployment)
-│   ├── gpu_data.py          # Machine type catalog, zone mappings
-│   ├── advisory.py          # DWS Calendar & Spot advisory APIs
+│   ├── advisory.py          # DWS Calendar & Spot advisory API queries
+│   ├── gpu_data.py          # Machine type catalog, zone mappings, consumption support
 │   └── requirements.txt     # Python dependencies
 ├── frontend/
 │   ├── src/
-│   │   ├── App.jsx          # Main app with tabs (Scan, Advisory)
+│   │   ├── App.jsx          # Main app — auth drawer, tab navigation
 │   │   └── components/
-│   │       ├── ScanningPanel.jsx    # Scan & Deploy configuration UI
-│   │       ├── AdvisoryPanel.jsx    # Advisory queries UI
-│   │       └── MachineTypeSelector.jsx  # Chip → Machine type picker
-│   ├── index.html
-│   ├── vite.config.js
+│   │       ├── AdvisoryPanel.jsx       # Calendar & Spot advisory queries
+│   │       ├── ScanningPanel.jsx       # Scan & Deploy configuration + live logs
+│   │       └── MachineTypeSelector.jsx # Category → Chip → Machine type picker
+│   ├── vite.config.js       # Vite config with API proxy
 │   └── package.json
-├── .gitignore
 └── README.md
 ```
 
 ### Tech Stack
-- **Backend**: Python, FastAPI, WebSocket, httpx, Google Cloud REST APIs
-- **Frontend**: React 18, Material UI, Vite
-- **Auth**: Google Application Default Credentials (ADC)
+
+| Layer | Technology |
+|-------|-----------|
+| Backend | Python 3.10+, FastAPI, WebSocket, httpx |
+| Frontend | React 18, Material UI v5, Vite |
+| Auth | Google Application Default Credentials (ADC) |
+| APIs | Compute Engine REST API (v1), TPU API (v2), Spot Advisory (alpha) |
+
+### API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/auth/check` | Verify GCP auth and project access |
+| `POST` | `/api/auth/login` | Trigger `gcloud auth application-default login` |
+| `GET` | `/api/machine-types` | List all GPU/TPU machine types with zone info |
+| `GET` | `/api/chip-groups` | Machine types grouped by chip for the selector |
+| `GET` | `/api/machine-types/{type}/zones` | Zones for a specific machine type |
+| `POST` | `/api/advisory/calendar` | Query DWS Calendar Advisory API |
+| `POST` | `/api/advisory/calendar/splits` | Find best capacity split plan |
+| `POST` | `/api/advisory/spot` | Query Spot VM Advisory API |
+| `WS` | `/ws/scan` | WebSocket for real-time scan & deploy |
 
 ---
 
-## 🔧 Configuration
+## Configuration
 
 ### Required GCP IAM Permissions
 
-The authenticated user/service account needs these roles on the target project:
+The authenticated user or service account needs:
 
 | Role | Purpose |
 |------|---------|
 | `roles/compute.admin` | Create reservations, instances, future reservations |
 | `roles/tpu.admin` | Create TPU nodes and queued resources (if using TPUs) |
 
-### Environment
+### CORS Configuration
 
-No environment variables are required. The app uses **Application Default Credentials (ADC)** — just run `gcloud auth application-default login` before starting.
+By default, the backend allows requests from `localhost:3000` and `localhost:5173` (Vite dev servers). To customize:
+
+```bash
+export CORS_ORIGINS="http://localhost:3000,https://your-domain.com"
+```
 
 ### Changing the Port
 
-Edit the last line of `backend/main.py`:
+Edit `backend/main.py`:
 
 ```python
-uvicorn.run(app, host="0.0.0.0", port=8000)  # Change 8000 to your desired port
+uvicorn.run(app, host="0.0.0.0", port=8000)  # Change 8000
 ```
 
 ---
 
-## 📖 Usage Guide
+## Usage Guide
 
 ### Setting Up a Scan
 
-1. **Enter your GCP Project ID** and click "Connect" to authenticate
-2. **Select a machine type** using the Category → Chip → Machine Type selector
-3. **Add scanning priorities** — each priority tries a specific consumption model:
-   - Choose the method (On-Demand, DWS Calendar, DWS Flex, Spot)
-   - Select target zones (or leave empty to try all available zones)
-   - Set max retries and retry interval
-   - Optionally set a resource name prefix
-4. **Configure method-specific settings**:
-   - **DWS Calendar**: Set start and end times for the reservation window
-   - **DWS Flex**: Set usage duration (how long you need the GPUs)
-5. Choose **Sequential** (try one after another) or **Parallel** (race all at once) execution
-6. Click **Start Scan & Deploy**
+1. **Authenticate** — Click "Authenticate with Google" to open browser sign-in
+2. **Connect** — Enter your GCP Project ID and click "Connect"
+3. **Select machine type** — Pick Category (GPU/TPU) → Chip → Machine Type
+4. **Set VM count** — Min and Max VMs (system tries max first, scales down to min)
+5. **Add priorities** — Each priority specifies:
+   - Consumption method (On-Demand, DWS Calendar, DWS Flex, Spot)
+   - Target zones (leave empty = try all available)
+   - Retry rounds and interval
+   - Optional resource name prefix
+6. **Method-specific settings**:
+   - **DWS Calendar**: Start/end times for the reservation window
+   - **DWS Flex**: Max wait time and usage duration
+7. Choose **Sequential** or **Parallel** execution
+8. Click **Start Scan & Deploy**
 
-### Understanding Results
+### Using the Advisory Tab
 
-- ✅ **Success** — Capacity secured! The log shows which method and zone succeeded
-- ❌ **Failed** — All priorities exhausted. Try different zones, machine types, or methods
-- 🛑 **Cancelled** — You stopped the scan. Check for partially created resources in GCP Console
+#### Check Availability
+1. Select a machine type and enter VM count
+2. Pick a start date and flexibility window (0-3 days)
+3. Set duration in days
+4. Click **Check Availability** to see zone recommendations
+
+#### Find Best Plan
+1. Same inputs as above
+2. Click **Find Best Plan** — queries at 100%, 75%, 50%, 25%, and 1 VM counts
+3. View results grouped by VM count level to plan multiple reservations
+4. Example: "No 20-GPU slot, but 15 GPUs available days 1-3, then 5 more days 4-7"
+
+### Understanding Scan Results
+
+| Status | Meaning |
+|--------|---------|
+| **Success** | Capacity secured. Logs show method, zone, and resource details. |
+| **Failed** | All priorities exhausted. Try different zones, types, or methods. |
+| **Cancelled** | You stopped the scan. Check GCP Console for partial resources. |
 
 ### DWS Calendar Behavior
-When a Calendar reservation is submitted, it enters **PENDING_APPROVAL** status. The tool polls indefinitely until Google approves or rejects the reservation. If rejected, it moves to the next priority.
+Calendar future reservations use `reservationMode: CALENDAR` with DENSE deployment for multi-node GPU families (A3, A4). After submission, the tool polls until Google approves or rejects. Approval is typically within a minute for eligible projects.
 
 ### DWS Flex Behavior
-- **For GPUs**: The Compute Engine API doesn't have a real queue — each attempt either succeeds or fails immediately. The tool uses your configured max retries and interval to keep trying.
-- **For TPUs**: Uses the TPU Queued Resource API which supports actual queuing. Your request stays queued until capacity becomes available or the max wait time expires.
+- **GPUs**: Uses Compute Engine reservations with retry logic (no real queue — each attempt succeeds or fails immediately)
+- **TPUs**: Uses the TPU Queued Resource API with actual server-side queuing
 
 ---
 
-## 🐳 Docker Deployment (Optional)
+## Deployment
+
+### Docker
 
 ```dockerfile
 FROM python:3.11-slim
 
-# Install Node.js
 RUN apt-get update && apt-get install -y curl && \
     curl -fsSL https://deb.nodesource.com/setup_18.x | bash - && \
     apt-get install -y nodejs && rm -rf /var/lib/apt/lists/*
@@ -191,13 +274,9 @@ RUN apt-get update && apt-get install -y curl && \
 WORKDIR /app
 COPY . .
 
-# Install backend
 RUN pip install --no-cache-dir -r backend/requirements.txt
-
-# Build frontend
 RUN cd frontend && npm install && npm run build
 
-# Run
 EXPOSE 8000
 CMD ["python", "backend/main.py"]
 ```
@@ -209,37 +288,34 @@ docker run -p 8000:8000 \
   capacity-radar
 ```
 
-> **Note**: Mount your `gcloud` config directory to pass authentication credentials to the container.
+> Mount your `gcloud` config directory to pass ADC credentials to the container.
 
----
-
-## 🌐 Cloud Run Deployment
+### Cloud Run
 
 ```bash
-# Build and deploy to Cloud Run
 gcloud run deploy capacity-radar \
   --source . \
   --port 8000 \
   --region us-central1 \
   --allow-unauthenticated \
-  --service-account YOUR_SERVICE_ACCOUNT@YOUR_PROJECT.iam.gserviceaccount.com
+  --service-account SA_NAME@PROJECT.iam.gserviceaccount.com
 ```
 
-Make sure the Cloud Run service account has `Compute Admin` and `TPU Admin` roles.
+The Cloud Run service account needs `Compute Admin` and `TPU Admin` roles.
 
 ---
 
-## ⚠️ Important Notes
+## Important Notes
 
-- **Cost Awareness**: This tool creates real GCP resources (reservations, VMs, TPU nodes). Ensure you understand the cost implications before deploying.
-- **Resource Cleanup**: If a scan is cancelled, check your GCP Console for partially created resources that may still be running and incurring charges.
+- **Cost**: This tool creates real GCP resources (reservations, VMs, TPU nodes). Understand cost implications before deploying.
+- **Cleanup**: If a scan is cancelled, check GCP Console for partially created resources that may still incur charges.
 - **Quotas**: Ensure your project has sufficient quota for the machine types and zones you're targeting.
-- **DWS Calendar Approval**: Future reservations require Google approval and may take time or be declined depending on capacity availability.
+- **DWS Calendar**: Future reservations may require Google account team approval for DENSE deployment eligibility. If you get a "not available for this project" error, contact your account representative.
+- **A4X Max**: Bare metal instances — cannot use on-demand reservations.
+- **Token Refresh**: ADC tokens are automatically refreshed every 50 minutes during long scans.
 
 ---
 
-## 👤 Creator
+## License
 
-**Mohammad Ghodratigohar** — [emgi@google.com](mailto:emgi@google.com)
-
-
+This project is provided as-is for internal use. See your organization's policies for distribution guidelines.

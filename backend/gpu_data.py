@@ -5,20 +5,20 @@ Source: Reservation_Script.docx reference tables.
 
 # Machine type families with their GPU info
 MACHINE_TYPES = {
-    # A4X Max (GB300)
-    "a4x-megagpu-8g": {
+    # A4X Max (GB300) — bare metal
+    "a4x-maxgpu-4g-metal": {
         "gpu": "NVIDIA GB300",
         "chip": "GB300",
-        "gpu_count": 8,
+        "gpu_count": 4,
         "family": "A4X Max",
         "category": "GPU",
         "accelerator_type": None,
     },
     # A4X (GB200)
-    "a4x-highgpu-8g": {
+    "a4x-highgpu-4g": {
         "gpu": "NVIDIA GB200",
         "chip": "GB200",
-        "gpu_count": 8,
+        "gpu_count": 4,
         "family": "A4X",
         "category": "GPU",
         "accelerator_type": None,
@@ -50,7 +50,40 @@ MACHINE_TYPES = {
         "category": "GPU",
         "accelerator_type": None,
     },
+    # A3 Edge (H100 80GB)
+    "a3-edgegpu-8g": {
+        "gpu": "NVIDIA H100 80GB",
+        "chip": "H100",
+        "gpu_count": 8,
+        "family": "A3 Edge",
+        "category": "GPU",
+        "accelerator_type": None,
+    },
     # A3 High (H100 80GB)
+    "a3-highgpu-1g": {
+        "gpu": "NVIDIA H100 80GB",
+        "chip": "H100",
+        "gpu_count": 1,
+        "family": "A3 High",
+        "category": "GPU",
+        "accelerator_type": None,
+    },
+    "a3-highgpu-2g": {
+        "gpu": "NVIDIA H100 80GB",
+        "chip": "H100",
+        "gpu_count": 2,
+        "family": "A3 High",
+        "category": "GPU",
+        "accelerator_type": None,
+    },
+    "a3-highgpu-4g": {
+        "gpu": "NVIDIA H100 80GB",
+        "chip": "H100",
+        "gpu_count": 4,
+        "family": "A3 High",
+        "category": "GPU",
+        "accelerator_type": None,
+    },
     "a3-highgpu-8g": {
         "gpu": "NVIDIA H100 80GB",
         "chip": "H100",
@@ -134,6 +167,30 @@ MACHINE_TYPES = {
         "accelerator_type": None,
     },
     # G4 (RTX PRO 6000)
+    "g4-standard-6": {
+        "gpu": "NVIDIA RTX PRO 6000",
+        "chip": "RTX PRO 6000",
+        "gpu_count": 1,
+        "family": "G4",
+        "category": "GPU",
+        "accelerator_type": None,
+    },
+    "g4-standard-12": {
+        "gpu": "NVIDIA RTX PRO 6000",
+        "chip": "RTX PRO 6000",
+        "gpu_count": 1,
+        "family": "G4",
+        "category": "GPU",
+        "accelerator_type": None,
+    },
+    "g4-standard-24": {
+        "gpu": "NVIDIA RTX PRO 6000",
+        "chip": "RTX PRO 6000",
+        "gpu_count": 1,
+        "family": "G4",
+        "category": "GPU",
+        "accelerator_type": None,
+    },
     "g4-standard-48": {
         "gpu": "NVIDIA RTX PRO 6000",
         "chip": "RTX PRO 6000",
@@ -248,7 +305,17 @@ GPU_ZONES = {
     ],
     "A3 Ultra (H200)": [
         "asia-south1-b", "asia-south2-c", "europe-west1-b", "europe-west4-a",
-        "us-central1-b", "us-east1-d", "us-east5-a", "us-south1-b", "us-west1-c"
+        "us-central1-b", "us-east1-d", "us-east4-b", "us-east5-a",
+        "us-south1-b", "us-west1-c"
+    ],
+    "A3 Edge (H100)": [
+        "asia-east1-a", "asia-east1-b", "asia-east1-c",
+        "asia-northeast1-b", "asia-southeast1-a", "asia-southeast1-b",
+        "europe-west1-b", "europe-west1-c", "europe-west4-a", "europe-west4-b",
+        "me-west1-b",
+        "us-central1-a", "us-central1-b", "us-central1-c",
+        "us-east1-b", "us-east1-c", "us-east4-a", "us-east4-b",
+        "us-west1-a", "us-west1-b"
     ],
     "A3 Mega (H100)": [
         "asia-east1-c", "asia-northeast1-b", "asia-southeast1-b",
@@ -280,7 +347,7 @@ GPU_ZONES = {
         "asia-south2-c", "asia-southeast1-b", "asia-southeast1-c",
         "asia-southeast2-b", "asia-southeast2-c", "europe-north1-a",
         "europe-west1-c", "europe-west2-b", "europe-west4-a", "europe-west4-b",
-        "europe-west8-b", "us-central1-b", "us-central1-f",
+        "europe-west4-c", "europe-west8-b", "us-central1-b", "us-central1-f",
         "us-east1-b", "us-east4-c", "us-east5-a", "us-east5-b", "us-east5-c",
         "us-south1-a", "us-south1-b", "us-west1-b", "us-west1-c",
         "us-west3-a", "us-west4-a"
@@ -288,21 +355,21 @@ GPU_ZONES = {
     "G2 (L4)": [
         "asia-east1-a", "asia-east1-b", "asia-east1-c",
         "asia-northeast1-a", "asia-northeast1-b", "asia-northeast1-c",
-        "asia-northeast3-a", "asia-northeast3-b", "asia-northeast3-c",
-        "asia-south1-a", "asia-south1-b",
+        "asia-northeast3-a", "asia-northeast3-b",
+        "asia-south1-a", "asia-south1-b", "asia-south1-c",
         "asia-southeast1-a", "asia-southeast1-b", "asia-southeast1-c",
-        "europe-west1-b", "europe-west1-c", "europe-west1-d",
+        "europe-west1-b", "europe-west1-c",
         "europe-west2-a", "europe-west2-b",
-        "europe-west3-b",
+        "europe-west3-a", "europe-west3-b",
         "europe-west4-a", "europe-west4-b", "europe-west4-c",
-        "europe-west6-a",
-        "me-central2-a",
+        "europe-west6-b", "europe-west6-c",
+        "me-central2-a", "me-central2-c",
         "northamerica-northeast2-a", "northamerica-northeast2-b",
         "us-central1-a", "us-central1-b", "us-central1-c", "us-central1-f",
-        "us-east1-b", "us-east1-c", "us-east1-d",
-        "us-east4-a", "us-east4-b", "us-east4-c",
-        "us-west1-a", "us-west1-b",
-        "us-west4-a", "us-west4-b", "us-west4-c"
+        "us-east1-b", "us-east1-c",
+        "us-east4-a", "us-east4-c",
+        "us-west1-a", "us-west1-b", "us-west1-c",
+        "us-west4-a", "us-west4-c"
     ],
 }
 
@@ -315,6 +382,7 @@ FAMILY_TO_GPU_ZONE_KEY = {
     "A4X": "A4X (GB200)",
     "A4": "A4 (B200)",
     "A3 Ultra": "A3 Ultra (H200)",
+    "A3 Edge": "A3 Edge (H100)",
     "A3 Mega": "A3 Mega (H100)",
     "A3 High": "A3 High (H100)",
     "A2 Ultra": "A2 Ultra (A100 80GB)",
@@ -327,28 +395,28 @@ FAMILY_TO_GPU_ZONE_KEY = {
 # Consumption model support matrix
 CONSUMPTION_SUPPORT = {
     "on_demand": {
-        "A4X Max": True, "A4X": True, "A4": False,
-        "A3 Ultra": False, "A3 Mega": True, "A3 High": True,
+        "A4X Max": False, "A4X": True, "A4": False,
+        "A3 Ultra": False, "A3 Edge": True, "A3 Mega": True, "A3 High": True,
         "A2 Ultra": True, "A2 Standard": True, "A2 Mega": True,
         "G4": True, "G2": True,
     },
     "spot": {
         "A4X Max": True, "A4X": True, "A4": True,
-        "A3 Ultra": True, "A3 Mega": True, "A3 High": True,
+        "A3 Ultra": True, "A3 Edge": True, "A3 Mega": True, "A3 High": True,
         "A2 Ultra": True, "A2 Standard": True, "A2 Mega": True,
         "G4": True, "G2": True,
     },
     "dws_calendar": {
         "A4X Max": False, "A4X": False, "A4": True,
-        "A3 Ultra": True, "A3 Mega": True, "A3 High": True,
+        "A3 Ultra": True, "A3 Edge": True, "A3 Mega": True, "A3 High": True,
         "A2 Ultra": False, "A2 Standard": False, "A2 Mega": False,
         "G4": False, "G2": False,
     },
     "dws_flex": {
         "A4X Max": True, "A4X": True, "A4": True,
-        "A3 Ultra": True, "A3 Mega": True, "A3 High": True,
-        "A2 Ultra": True, "A2 Standard": True, "A2 Mega": True,
-        "G4": True, "G2": True,
+        "A3 Ultra": True, "A3 Edge": True, "A3 Mega": True, "A3 High": True,
+        "A2 Ultra": False, "A2 Standard": False, "A2 Mega": False,
+        "G4": False, "G2": False,
     },
 }
 

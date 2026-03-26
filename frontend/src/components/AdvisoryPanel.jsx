@@ -26,30 +26,29 @@ export default function AdvisoryPanel({ machineTypes = [], loading: mtLoading, p
   const [machineType, setMachineType] = useState('')
   const [selectedZones, setSelectedZones] = useState([])
 
-  // Calendar-specific params
+  // Calendar-specific params (simplified)
   const [vmCount, setVmCount] = useState(1)
-  const [durationMinDays, setDurationMinDays] = useState(1)
-  const [durationMaxDays, setDurationMaxDays] = useState(7)
-  const [startFrom, setStartFrom] = useState(() => {
+  const [durationDays, setDurationDays] = useState(7)
+  const [startDate, setStartDate] = useState(() => {
     const d = new Date(); d.setDate(d.getDate() + 1)
     return d.toISOString().split('T')[0]
   })
-  const [startTo, setStartTo] = useState(() => {
-    const d = new Date(); d.setDate(d.getDate() + 14)
-    return d.toISOString().split('T')[0]
-  })
+  const [flexibilityDays, setFlexibilityDays] = useState(0)
 
   // Results state
   const [calendarResults, setCalendarResults] = useState(null)
+  const [splitsResults, setSplitsResults] = useState(null)
   const [spotResults, setSpotResults] = useState(null)
   const [calendarLoading, setCalendarLoading] = useState(false)
+  const [splitsLoading, setSplitsLoading] = useState(false)
   const [spotLoading, setSpotLoading] = useState(false)
   const [calendarError, setCalendarError] = useState(null)
+  const [splitsError, setSplitsError] = useState(null)
   const [spotError, setSpotError] = useState(null)
   const [showCalendarErrors, setShowCalendarErrors] = useState(false)
   const [showSpotErrors, setShowSpotErrors] = useState(false)
   const [showUnsupported, setShowUnsupported] = useState(false)
-  const [calendarQueryInfo, setCalendarQueryInfo] = useState(null) // tracks which mode was used
+  const [calendarQueryInfo, setCalendarQueryInfo] = useState(null)
 
   const selectedMachineInfo = useMemo(() => {
     return machineTypes.find(mt => mt.machineType === machineType)
@@ -63,47 +62,78 @@ export default function AdvisoryPanel({ machineTypes = [], loading: mtLoading, p
 
   const getZonesAndRegions = () => {
     const zones = selectedZones.length > 0 ? selectedZones : availableZones
-    const regions = [...new Set(zones.map(z => z.split('-').slice(0, -1).join('-')))]
+    const regions = [...new Set(zones.map(z => z.split('-').slice(0, -1).join('-')))].filter(Boolean)
     return { zones, regions }
   }
 
-  const queryCalendarAdvisory = async (overrides = {}) => {
+  const queryCalendarAdvisory = async () => {
     setCalendarLoading(true)
     setCalendarError(null)
     setCalendarResults(null)
-    const isAutoDiscover = !!overrides.startFrom // "Find best times" always passes overrides
-    const usedParams = {
-      mode: isAutoDiscover ? 'auto' : 'manual',
-      durationMin: overrides.durationMinDays || durationMinDays,
-      durationMax: overrides.durationMaxDays || durationMaxDays,
-      from: overrides.startFrom || startFrom,
-      to: overrides.startTo || startTo,
-    }
-    setCalendarQueryInfo(usedParams)
+    setSplitsResults(null)
+    setCalendarQueryInfo({
+      mode: 'check',
+      startDate,
+      flexibilityDays,
+      durationDays,
+    })
     try {
       const { zones, regions } = getZonesAndRegions()
       const resp = await fetch('/api/advisory/calendar', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          project, machineType,
-          vmCount: overrides.vmCount || vmCount,
-          durationMinDays: usedParams.durationMin,
-          durationMaxDays: usedParams.durationMax,
-          startFrom: usedParams.from,
-          startTo: usedParams.to,
+          project, machineType, vmCount,
+          startDate, flexibilityDays, durationDays,
           regions, zones,
         }),
       })
       if (!resp.ok) {
-        const err = await resp.json()
-        throw new Error(err.detail || 'Failed to query calendar advisory')
+        let errMsg = `HTTP ${resp.status}`
+        try { const err = await resp.json(); errMsg = err.detail || errMsg } catch { /* non-JSON */ }
+        throw new Error(errMsg)
       }
       setCalendarResults(await resp.json())
     } catch (e) {
       setCalendarError(e.message)
     } finally {
       setCalendarLoading(false)
+    }
+  }
+
+  const findBestPlan = async () => {
+    setSplitsLoading(true)
+    setSplitsError(null)
+    setSplitsResults(null)
+    setCalendarResults(null)
+    setCalendarQueryInfo({
+      mode: 'splits',
+      startDate,
+      flexibilityDays,
+      durationDays,
+      vmCount,
+    })
+    try {
+      const { zones, regions } = getZonesAndRegions()
+      const resp = await fetch('/api/advisory/calendar/splits', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          project, machineType, vmCount,
+          startDate, flexibilityDays, durationDays,
+          regions, zones,
+        }),
+      })
+      if (!resp.ok) {
+        let errMsg = `HTTP ${resp.status}`
+        try { const err = await resp.json(); errMsg = err.detail || errMsg } catch { /* non-JSON */ }
+        throw new Error(errMsg)
+      }
+      setSplitsResults(await resp.json())
+    } catch (e) {
+      setSplitsError(e.message)
+    } finally {
+      setSplitsLoading(false)
     }
   }
 
@@ -119,8 +149,9 @@ export default function AdvisoryPanel({ machineTypes = [], loading: mtLoading, p
         body: JSON.stringify({ project, machineType, regions, zones }),
       })
       if (!resp.ok) {
-        const err = await resp.json()
-        throw new Error(err.detail || 'Failed to query spot advisory')
+        let errMsg = `HTTP ${resp.status}`
+        try { const err = await resp.json(); errMsg = err.detail || errMsg } catch { /* non-JSON */ }
+        throw new Error(errMsg)
       }
       setSpotResults(await resp.json())
     } catch (e) {
@@ -132,6 +163,7 @@ export default function AdvisoryPanel({ machineTypes = [], loading: mtLoading, p
 
   const supportsCalendar = selectedMachineInfo?.supported?.dws_calendar
   const canQuery = machineType && project
+  const anyLoading = calendarLoading || splitsLoading
 
   return (
     <Box>
@@ -164,7 +196,7 @@ export default function AdvisoryPanel({ machineTypes = [], loading: mtLoading, p
           />
         </Box>
 
-        {/* Show unsupported toggle — inside Select Resource */}
+        {/* Show unsupported toggle */}
         {machineType && (
           <Box sx={{ mb: 1.5, mt: 1.5, display: 'flex', alignItems: 'center', gap: 1 }}>
             <FormControlLabel
@@ -245,7 +277,7 @@ export default function AdvisoryPanel({ machineTypes = [], loading: mtLoading, p
               <Tooltip title="Shows recommended zones and time windows for DWS Calendar mode reservations. Supported for A3, A4, and TPU families.">
                 <InfoOutlinedIcon sx={{ fontSize: 16, color: '#80868b', cursor: 'help' }} />
               </Tooltip>
-              {calendarLoading && <CircularProgress size={18} sx={{ ml: 'auto' }} />}
+              {anyLoading && <CircularProgress size={18} sx={{ ml: 'auto' }} />}
             </Box>
 
             {!selectedMachineInfo?.supported?.dws_calendar && machineType && (
@@ -254,62 +286,56 @@ export default function AdvisoryPanel({ machineTypes = [], loading: mtLoading, p
               </Alert>
             )}
 
-            {/* Calendar-specific inputs */}
+            {/* Calendar inputs — simplified */}
             {(supportsCalendar || !machineType) && (
               <Box sx={{ bgcolor: '#e8f0fe', borderRadius: 2, p: 2, mb: 2 }}>
                 <Grid container spacing={1.5}>
-                  <Grid item xs={4}>
+                  <Grid item xs={6} sm={3}>
                     <TextField fullWidth type="number" label="VM Count" value={vmCount}
                       onChange={(e) => setVmCount(Math.max(1, parseInt(e.target.value) || 1))}
                       size="small" inputProps={{ min: 1 }} />
                   </Grid>
-                  <Grid item xs={4}>
-                    <TextField fullWidth type="number" label="Min (days)" value={durationMinDays}
-                      onChange={(e) => setDurationMinDays(Math.max(1, parseInt(e.target.value) || 1))}
-                      size="small" inputProps={{ min: 1, max: 90 }} />
+                  <Grid item xs={6} sm={3}>
+                    <TextField fullWidth type="number" label="Duration (days)" value={durationDays}
+                      onChange={(e) => setDurationDays(Math.max(1, parseInt(e.target.value) || 1))}
+                      size="small" inputProps={{ min: 1, max: 365 }}
+                      helperText="How long you need GPUs" />
                   </Grid>
-                  <Grid item xs={4}>
-                    <TextField fullWidth type="number" label="Max (days)" value={durationMaxDays}
-                      onChange={(e) => setDurationMaxDays(Math.max(1, parseInt(e.target.value) || 7))}
-                      size="small" inputProps={{ min: 1, max: 90 }} />
+                  <Grid item xs={6} sm={3}>
+                    <TextField fullWidth type="date" label="Start Date" value={startDate}
+                      onChange={(e) => setStartDate(e.target.value)} size="small"
+                      InputLabelProps={{ shrink: true }}
+                      helperText="When to start" />
                   </Grid>
-                  <Grid item xs={6}>
-                    <TextField fullWidth type="date" label="Start from" value={startFrom}
-                      onChange={(e) => setStartFrom(e.target.value)} size="small"
-                      InputLabelProps={{ shrink: true }} helperText="Earliest start" />
-                  </Grid>
-                  <Grid item xs={6}>
-                    <TextField fullWidth type="date" label="Start to" value={startTo}
-                      onChange={(e) => setStartTo(e.target.value)} size="small"
-                      InputLabelProps={{ shrink: true }} helperText="Latest start" />
+                  <Grid item xs={6} sm={3}>
+                    <TextField fullWidth select label="Flexibility" value={flexibilityDays}
+                      onChange={(e) => setFlexibilityDays(parseInt(e.target.value))} size="small"
+                      helperText="Start date flexibility">
+                      <MenuItem value={0}>None (exact date)</MenuItem>
+                      <MenuItem value={1}>+/- 1 day</MenuItem>
+                      <MenuItem value={2}>+/- 2 days</MenuItem>
+                      <MenuItem value={3}>+/- 3 days</MenuItem>
+                    </TextField>
                   </Grid>
                 </Grid>
                 <Box sx={{ display: 'flex', gap: 1, mt: 1.5 }}>
                   <Button
                     variant="contained" sx={{ flex: 1 }}
-                    onClick={() => queryCalendarAdvisory()}
-                    disabled={!canQuery || calendarLoading || !supportsCalendar}
+                    onClick={queryCalendarAdvisory}
+                    disabled={!canQuery || anyLoading || !supportsCalendar}
                     startIcon={calendarLoading ? <CircularProgress size={16} /> : <CalendarMonthIcon />}
                   >
-                    Query with dates
+                    Check Availability
                   </Button>
-                  <Tooltip title="Scan the next 6 months with flexible 1-90 day duration to find the best time windows automatically" arrow>
+                  <Tooltip title="Analyze capacity at different VM counts to build a deployment plan with sub-duration splits" arrow>
                     <span>
                       <Button
                         variant="outlined" sx={{ flex: 1 }}
-                        onClick={() => {
-                          const from = new Date(); from.setDate(from.getDate() + 1)
-                          const to = new Date(); to.setMonth(to.getMonth() + 6)
-                          queryCalendarAdvisory({
-                            durationMinDays: 1, durationMaxDays: 90,
-                            startFrom: from.toISOString().split('T')[0],
-                            startTo: to.toISOString().split('T')[0],
-                          })
-                        }}
-                        disabled={!canQuery || calendarLoading || !supportsCalendar}
-                        startIcon={calendarLoading ? <CircularProgress size={16} /> : <SearchIcon />}
+                        onClick={findBestPlan}
+                        disabled={!canQuery || anyLoading || !supportsCalendar}
+                        startIcon={splitsLoading ? <CircularProgress size={16} /> : <SearchIcon />}
                       >
-                        🔍 Find best times
+                        Find Best Plan
                       </Button>
                     </span>
                   </Tooltip>
@@ -323,121 +349,113 @@ export default function AdvisoryPanel({ machineTypes = [], loading: mtLoading, p
                 {calendarError}
               </Alert>
             )}
+            {splitsError && (
+              <Alert severity="error" sx={{ mb: 2 }}>
+                <AlertTitle>Capacity Plan Error</AlertTitle>
+                {splitsError}
+              </Alert>
+            )}
 
+            {/* Check Availability results */}
             {calendarResults && (
               <>
-                {/* Query summary banner */}
                 {calendarQueryInfo && (
-                  <Alert severity={calendarQueryInfo.mode === 'auto' ? 'info' : 'success'}
-                    icon={calendarQueryInfo.mode === 'auto' ? <SearchIcon /> : <CalendarMonthIcon />}
+                  <Alert severity="success"
+                    icon={<CalendarMonthIcon />}
                     sx={{ mb: 2, py: 0.5, '& .MuiAlert-message': { fontSize: '0.78rem' } }}>
-                    <strong>{calendarQueryInfo.mode === 'auto' ? '🔍 Auto-Discovery' : '📅 Custom Dates'}:</strong>{' '}
-                    {calendarQueryInfo.from} → {calendarQueryInfo.to} | Duration: {calendarQueryInfo.durationMin}–{calendarQueryInfo.durationMax} days
+                    <strong>Check Availability:</strong>{' '}
+                    {calendarQueryInfo.startDate}
+                    {calendarQueryInfo.flexibilityDays > 0 && ` (+/- ${calendarQueryInfo.flexibilityDays}d)`}
+                    {' | '}{calendarQueryInfo.durationDays} days
                     {(() => {
-                      const recCount = calendarResults.recommendations.filter(r => r.status === 'RECOMMENDED').length
-                      const noCapCount = calendarResults.recommendations.filter(r => r.status === 'NO_CAPACITY').length
+                      const recs = calendarResults.recommendations || []
+                      const recCount = recs.filter(r => r.status === 'RECOMMENDED').length
+                      const noCapCount = recs.filter(r => r.status === 'NO_CAPACITY').length
                       return <> | <strong>{recCount} recommended</strong>, {noCapCount} no capacity</>
                     })()}
                   </Alert>
                 )}
                 {calendarResults.tpuInfo && (
-                  <Alert severity="info" sx={{ mb: 2, '& .MuiAlert-message': { fontSize: '0.8rem', width: '100%' } }}>
-                    <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 0.5 }}>
-                      {calendarResults.tpuInfo.name} — {calendarResults.tpuInfo.machineType}
-                    </Typography>
-                    <Typography variant="body2" sx={{ mb: 1 }}>{calendarResults.message}</Typography>
-                    <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', mb: 1 }}>
-                      {calendarResults.tpuInfo.specs?.chips && <Chip label={`${calendarResults.tpuInfo.specs.chips} chips`} size="small" sx={{ height: 22, fontSize: '0.65rem' }} />}
-                      {calendarResults.tpuInfo.specs?.vcpus && <Chip label={`${calendarResults.tpuInfo.specs.vcpus} vCPUs`} size="small" sx={{ height: 22, fontSize: '0.65rem' }} />}
-                      {calendarResults.tpuInfo.specs?.memory_gb && <Chip label={`${calendarResults.tpuInfo.specs.memory_gb} GB RAM`} size="small" sx={{ height: 22, fontSize: '0.65rem' }} />}
-                      {calendarResults.tpuInfo.specs?.hbm_gb && <Chip label={`${calendarResults.tpuInfo.specs.hbm_gb} GB HBM`} size="small" sx={{ height: 22, fontSize: '0.65rem' }} />}
-                    </Box>
-                    <Typography variant="caption" color="text.secondary">
-                      <strong>Zones:</strong> {calendarResults.tpuInfo.zones?.join(', ')}
-                    </Typography>
-                    {calendarResults.tpuInfo.topologies?.length > 0 && (
-                      <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
-                        <strong>Topologies:</strong> {calendarResults.tpuInfo.topologies.join(', ')}
-                      </Typography>
-                    )}
-                    <Box sx={{ display: 'flex', gap: 0.5, mt: 1, flexWrap: 'wrap' }}>
-                      <Chip label="On-Demand" size="small" color={calendarResults.tpuInfo.supported?.on_demand ? 'success' : 'default'} variant="outlined" sx={{ height: 20, fontSize: '0.6rem' }} />
-                      <Chip label="Spot" size="small" color={calendarResults.tpuInfo.supported?.spot ? 'success' : 'default'} variant="outlined" sx={{ height: 20, fontSize: '0.6rem' }} />
-                      <Chip label="DWS Calendar" size="small" color={calendarResults.tpuInfo.supported?.dws_calendar ? 'success' : 'default'} variant="outlined" sx={{ height: 20, fontSize: '0.6rem' }} />
-                      <Chip label="DWS Flex" size="small" color={calendarResults.tpuInfo.supported?.dws_flex ? 'success' : 'default'} variant="outlined" sx={{ height: 20, fontSize: '0.6rem' }} />
-                    </Box>
-                  </Alert>
+                  <TpuInfoAlert info={calendarResults.tpuInfo} message={calendarResults.message} />
                 )}
-                {(() => {
-                  const validStatuses = ['RECOMMENDED', 'NO_CAPACITY', 'NO_DATA']
-                  const filteredRecs = showUnsupported
-                    ? calendarResults.recommendations
-                    : calendarResults.recommendations.filter(r => validStatuses.includes(r.status))
-                  const hiddenCount = calendarResults.recommendations.length - filteredRecs.length
-                  return filteredRecs.length > 0 ? (
-                    <>
-                      <TableContainer>
-                        <Table size="small">
-                          <TableHead>
-                            <TableRow>
-                              <TableCell>Zone</TableCell>
-                              <TableCell>Status</TableCell>
-                              <TableCell>Details</TableCell>
-                            </TableRow>
-                          </TableHead>
-                          <TableBody>
-                            {filteredRecs
-                              .sort((a, b) => (a.status === 'RECOMMENDED' ? -1 : 1))
-                              .map((rec, idx) => (
-                              <TableRow key={idx} hover sx={rec.status === 'RECOMMENDED' ? { bgcolor: '#e6f4ea' } : {}}>
-                                <TableCell sx={{ fontWeight: 500 }}>{rec.zone}</TableCell>
-                                <TableCell>
-                                  <Chip label={rec.status || 'UNKNOWN'} size="small"
-                                    color={rec.status === 'RECOMMENDED' ? 'success' : rec.status === 'NO_CAPACITY' ? 'error' : 'default'}
-                                    sx={{ height: 22, fontSize: '0.65rem' }} />
-                                </TableCell>
-                                <TableCell sx={{ fontSize: '0.75rem', color: '#5f6368' }}>
-                                  {rec.details || (rec.status === 'RECOMMENDED' ? '✅ Capacity available' : '—')}
-                                </TableCell>
-                              </TableRow>
-                            ))}
-                          </TableBody>
-                        </Table>
-                      </TableContainer>
-                      {hiddenCount > 0 && !showUnsupported && (
-                        <Typography variant="caption" sx={{ mt: 1, display: 'block', color: '#80868b', fontSize: '0.68rem' }}>
-                          {hiddenCount} unsupported zone(s) hidden. Enable "Show all" toggle to see them.
-                        </Typography>
-                      )}
-                    </>
-                  ) : (
-                    <Alert severity="warning">
-                      {calendarResults.recommendations.length > 0
-                        ? `No supported zone results found. ${calendarResults.recommendations.length} unsupported zone(s) hidden. Enable "Show all" toggle to see them.`
-                        : 'No calendar advisory recommendations found.'}
-                    </Alert>
-                  )
-                })()}
-                {calendarResults.errors?.length > 0 && (
-                  <Box sx={{ mt: 2 }}>
-                    <Button size="small" onClick={() => setShowCalendarErrors(!showCalendarErrors)}
-                      endIcon={showCalendarErrors ? <ExpandLessIcon /> : <ExpandMoreIcon />}
-                      sx={{ color: '#d93025', fontSize: '0.75rem' }}>
-                      {calendarResults.errors.length} zone error(s)
-                    </Button>
-                    <Collapse in={showCalendarErrors}>
-                      <Box sx={{ mt: 1 }}>
-                        {calendarResults.errors.map((err, idx) => (
-                          <Alert key={idx} severity="warning" sx={{ mb: 0.5, py: 0, '& .MuiAlert-message': { fontSize: '0.75rem' } }}>{err}</Alert>
-                        ))}
-                      </Box>
-                    </Collapse>
-                  </Box>
-                )}
+                <CalendarRecsTable
+                  recommendations={calendarResults.recommendations || []}
+                  showUnsupported={showUnsupported}
+                />
+                <ErrorsCollapse errors={calendarResults.errors}
+                  show={showCalendarErrors} setShow={setShowCalendarErrors} />
               </>
             )}
 
-            {!calendarResults && !calendarLoading && !calendarError && !machineType && (
+            {/* Find Best Plan results */}
+            {splitsResults && (
+              <>
+                {splitsResults.tpuInfo ? (
+                  <TpuInfoAlert info={splitsResults.tpuInfo} message={splitsResults.message} />
+                ) : (
+                  <>
+                    <Alert severity="info" sx={{ mb: 2 }}>
+                      <AlertTitle>Capacity Plan</AlertTitle>
+                      <Typography variant="body2">{splitsResults.summary}</Typography>
+                    </Alert>
+                    {(splitsResults.splits || []).map((split, idx) => {
+                      const recommended = (split.recommendations || []).filter(r => r.status === 'RECOMMENDED')
+                      return (
+                        <Box key={idx} sx={{ mb: 2 }}>
+                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
+                            <Chip
+                              label={`${split.vmCount} VMs (${split.percentOfRequested}%)`}
+                              size="small"
+                              color={split.percentOfRequested === 100 ? 'success' : 'warning'}
+                              sx={{ height: 24, fontSize: '0.7rem', fontWeight: 600 }}
+                            />
+                            <Typography variant="caption" color="text.secondary">
+                              {recommended.length > 0
+                                ? `${recommended.length} zone(s) with capacity`
+                                : 'No availability'}
+                            </Typography>
+                          </Box>
+                          {recommended.length > 0 ? (
+                            <TableContainer sx={{ maxHeight: 200 }}>
+                              <Table size="small">
+                                <TableHead>
+                                  <TableRow>
+                                    <TableCell>Zone</TableCell>
+                                    <TableCell>Start</TableCell>
+                                    <TableCell>End</TableCell>
+                                  </TableRow>
+                                </TableHead>
+                                <TableBody>
+                                  {recommended.map((rec, ridx) => (
+                                    <TableRow key={ridx} hover sx={{ bgcolor: '#e6f4ea' }}>
+                                      <TableCell sx={{ fontWeight: 500 }}>{rec.zone}</TableCell>
+                                      <TableCell sx={{ fontSize: '0.75rem' }}>
+                                        {rec.startTime ? new Date(rec.startTime).toLocaleDateString() : '—'}
+                                      </TableCell>
+                                      <TableCell sx={{ fontSize: '0.75rem' }}>
+                                        {rec.endTime ? new Date(rec.endTime).toLocaleDateString() : '—'}
+                                      </TableCell>
+                                    </TableRow>
+                                  ))}
+                                </TableBody>
+                              </Table>
+                            </TableContainer>
+                          ) : (
+                            <Typography variant="caption" color="text.secondary" sx={{ ml: 1 }}>
+                              No capacity at this VM count in the specified window.
+                            </Typography>
+                          )}
+                        </Box>
+                      )
+                    })}
+                  </>
+                )}
+                <ErrorsCollapse errors={splitsResults.errors}
+                  show={showCalendarErrors} setShow={setShowCalendarErrors} />
+              </>
+            )}
+
+            {!calendarResults && !splitsResults && !anyLoading && !calendarError && !splitsError && !machineType && (
               <Box sx={{ textAlign: 'center', py: 3, color: '#80868b' }}>
                 <CalendarMonthIcon sx={{ fontSize: 40, mb: 1, opacity: 0.3 }} />
                 <Typography variant="body2">Select a machine type above first</Typography>
@@ -463,7 +481,6 @@ export default function AdvisoryPanel({ machineTypes = [], loading: mtLoading, p
               {spotLoading && <CircularProgress size={18} sx={{ ml: 'auto' }} />}
             </Box>
 
-            {/* Spot query - no extra inputs needed, just query button */}
             <Box sx={{ bgcolor: '#fef7e0', borderRadius: 2, p: 2, mb: 2 }}>
               <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
                 Spot Advisory requires no additional parameters — it checks availability and preemption risk for the selected machine type across all selected zones.
@@ -489,19 +506,9 @@ export default function AdvisoryPanel({ machineTypes = [], loading: mtLoading, p
             {spotResults && (
               <>
                 {spotResults.tpuInfo && (
-                  <Alert severity="info" sx={{ mb: 2, '& .MuiAlert-message': { fontSize: '0.8rem', width: '100%' } }}>
-                    <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 0.5 }}>
-                      {spotResults.tpuInfo.name} — {spotResults.tpuInfo.machineType}
-                    </Typography>
-                    <Typography variant="body2" sx={{ mb: 1 }}>{spotResults.message}</Typography>
-                    <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
-                      {spotResults.tpuInfo.specs?.chips && <Chip label={`${spotResults.tpuInfo.specs.chips} chips`} size="small" sx={{ height: 22, fontSize: '0.65rem' }} />}
-                      {spotResults.tpuInfo.specs?.vcpus && <Chip label={`${spotResults.tpuInfo.specs.vcpus} vCPUs`} size="small" sx={{ height: 22, fontSize: '0.65rem' }} />}
-                      {spotResults.tpuInfo.specs?.hbm_gb && <Chip label={`${spotResults.tpuInfo.specs.hbm_gb} GB HBM`} size="small" sx={{ height: 22, fontSize: '0.65rem' }} />}
-                    </Box>
-                  </Alert>
+                  <TpuInfoAlert info={spotResults.tpuInfo} message={spotResults.message} />
                 )}
-                {spotResults.recommendations.length > 0 ? (
+                {(spotResults.recommendations || []).length > 0 ? (
                   <TableContainer>
                     <Table size="small">
                       <TableHead>
@@ -513,7 +520,7 @@ export default function AdvisoryPanel({ machineTypes = [], loading: mtLoading, p
                         </TableRow>
                       </TableHead>
                       <TableBody>
-                        {spotResults.recommendations.map((rec, idx) => (
+                        {(spotResults.recommendations || []).map((rec, idx) => (
                           <TableRow key={idx} hover>
                             <TableCell>{rec.region}</TableCell>
                             <TableCell sx={{ fontWeight: 500 }}>{rec.zone}</TableCell>
@@ -527,22 +534,8 @@ export default function AdvisoryPanel({ machineTypes = [], loading: mtLoading, p
                 ) : (
                   <Alert severity="warning">No spot advisory recommendations found.</Alert>
                 )}
-                {spotResults.errors?.length > 0 && (
-                  <Box sx={{ mt: 2 }}>
-                    <Button size="small" onClick={() => setShowSpotErrors(!showSpotErrors)}
-                      endIcon={showSpotErrors ? <ExpandLessIcon /> : <ExpandMoreIcon />}
-                      sx={{ color: '#d93025', fontSize: '0.75rem' }}>
-                      {spotResults.errors.length} zone error(s)
-                    </Button>
-                    <Collapse in={showSpotErrors}>
-                      <Box sx={{ mt: 1 }}>
-                        {spotResults.errors.map((err, idx) => (
-                          <Alert key={idx} severity="warning" sx={{ mb: 0.5, py: 0, '& .MuiAlert-message': { fontSize: '0.75rem' } }}>{err}</Alert>
-                        ))}
-                      </Box>
-                    </Collapse>
-                  </Box>
-                )}
+                <ErrorsCollapse errors={spotResults.errors}
+                  show={showSpotErrors} setShow={setShowSpotErrors} />
               </>
             )}
 
@@ -556,6 +549,119 @@ export default function AdvisoryPanel({ machineTypes = [], loading: mtLoading, p
         </Grid>
         )}
       </Grid>
+    </Box>
+  )
+}
+
+// --- Helper components ---
+
+function CalendarRecsTable({ recommendations, showUnsupported }) {
+  const validStatuses = ['RECOMMENDED', 'NO_CAPACITY', 'NO_DATA']
+  const filteredRecs = showUnsupported
+    ? recommendations
+    : recommendations.filter(r => validStatuses.includes(r.status))
+  const hiddenCount = recommendations.length - filteredRecs.length
+
+  if (filteredRecs.length === 0) {
+    return (
+      <Alert severity="warning">
+        {recommendations.length > 0
+          ? `No supported zone results found. ${recommendations.length} unsupported zone(s) hidden. Enable "Show all" toggle to see them.`
+          : 'No calendar advisory recommendations found.'}
+      </Alert>
+    )
+  }
+
+  return (
+    <>
+      <TableContainer>
+        <Table size="small">
+          <TableHead>
+            <TableRow>
+              <TableCell>Zone</TableCell>
+              <TableCell>Status</TableCell>
+              <TableCell>Details</TableCell>
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {filteredRecs
+              .sort((a, b) => {
+                if (a.status === 'RECOMMENDED' && b.status !== 'RECOMMENDED') return -1
+                if (a.status !== 'RECOMMENDED' && b.status === 'RECOMMENDED') return 1
+                return 0
+              })
+              .map((rec, idx) => (
+              <TableRow key={idx} hover sx={rec.status === 'RECOMMENDED' ? { bgcolor: '#e6f4ea' } : {}}>
+                <TableCell sx={{ fontWeight: 500 }}>{rec.zone}</TableCell>
+                <TableCell>
+                  <Chip label={rec.status || 'UNKNOWN'} size="small"
+                    color={rec.status === 'RECOMMENDED' ? 'success' : rec.status === 'NO_CAPACITY' ? 'error' : 'default'}
+                    sx={{ height: 22, fontSize: '0.65rem' }} />
+                </TableCell>
+                <TableCell sx={{ fontSize: '0.75rem', color: '#5f6368' }}>
+                  {rec.details || (rec.status === 'RECOMMENDED' ? 'Capacity available' : '—')}
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </TableContainer>
+      {hiddenCount > 0 && !showUnsupported && (
+        <Typography variant="caption" sx={{ mt: 1, display: 'block', color: '#80868b', fontSize: '0.68rem' }}>
+          {hiddenCount} unsupported zone(s) hidden. Enable "Show all" toggle to see them.
+        </Typography>
+      )}
+    </>
+  )
+}
+
+function TpuInfoAlert({ info, message }) {
+  return (
+    <Alert severity="info" sx={{ mb: 2, '& .MuiAlert-message': { fontSize: '0.8rem', width: '100%' } }}>
+      <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 0.5 }}>
+        {info.name} — {info.machineType}
+      </Typography>
+      <Typography variant="body2" sx={{ mb: 1 }}>{message}</Typography>
+      <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', mb: 1 }}>
+        {info.specs?.chips && <Chip label={`${info.specs.chips} chips`} size="small" sx={{ height: 22, fontSize: '0.65rem' }} />}
+        {info.specs?.vcpus && <Chip label={`${info.specs.vcpus} vCPUs`} size="small" sx={{ height: 22, fontSize: '0.65rem' }} />}
+        {info.specs?.memory_gb && <Chip label={`${info.specs.memory_gb} GB RAM`} size="small" sx={{ height: 22, fontSize: '0.65rem' }} />}
+        {info.specs?.hbm_gb && <Chip label={`${info.specs.hbm_gb} GB HBM`} size="small" sx={{ height: 22, fontSize: '0.65rem' }} />}
+      </Box>
+      <Typography variant="caption" color="text.secondary">
+        <strong>Zones:</strong> {info.zones?.join(', ')}
+      </Typography>
+      {info.topologies?.length > 0 && (
+        <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
+          <strong>Topologies:</strong> {info.topologies.join(', ')}
+        </Typography>
+      )}
+      <Box sx={{ display: 'flex', gap: 0.5, mt: 1, flexWrap: 'wrap' }}>
+        <Chip label="On-Demand" size="small" color={info.supported?.on_demand ? 'success' : 'default'} variant="outlined" sx={{ height: 20, fontSize: '0.6rem' }} />
+        <Chip label="Spot" size="small" color={info.supported?.spot ? 'success' : 'default'} variant="outlined" sx={{ height: 20, fontSize: '0.6rem' }} />
+        <Chip label="DWS Calendar" size="small" color={info.supported?.dws_calendar ? 'success' : 'default'} variant="outlined" sx={{ height: 20, fontSize: '0.6rem' }} />
+        <Chip label="DWS Flex" size="small" color={info.supported?.dws_flex ? 'success' : 'default'} variant="outlined" sx={{ height: 20, fontSize: '0.6rem' }} />
+      </Box>
+    </Alert>
+  )
+}
+
+function ErrorsCollapse({ errors, show, setShow }) {
+  if (!errors || errors.length === 0) return null
+  return (
+    <Box sx={{ mt: 2 }}>
+      <Button size="small" onClick={() => setShow(!show)}
+        endIcon={show ? <ExpandLessIcon /> : <ExpandMoreIcon />}
+        sx={{ color: '#d93025', fontSize: '0.75rem' }}>
+        {errors.length} zone error(s)
+      </Button>
+      <Collapse in={show}>
+        <Box sx={{ mt: 1 }}>
+          {errors.map((err, idx) => (
+            <Alert key={idx} severity="warning" sx={{ mb: 0.5, py: 0, '& .MuiAlert-message': { fontSize: '0.75rem' } }}>{err}</Alert>
+          ))}
+        </Box>
+      </Collapse>
     </Box>
   )
 }

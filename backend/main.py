@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from gpu_data import get_all_machine_types_info, get_zones_for_machine_type, MACHINE_TYPES, get_chip_groups, TPU_TYPES
-from advisory import get_calendar_advisory, get_spot_advisory
+from advisory import get_calendar_advisory, get_spot_advisory, find_best_splits
 from hunter import (
     create_session, cancel_session, get_session,
     active_sessions, ConsumptionModel, ScanningStatus,
@@ -32,9 +32,14 @@ app = FastAPI(
 )
 
 # CORS for frontend dev server
+import os as _os
+_cors_origins = _os.environ.get(
+    "CORS_ORIGINS",
+    "http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173,http://127.0.0.1:3000"
+).split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[o.strip() for o in _cors_origins],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -47,10 +52,9 @@ class CalendarAdvisoryRequest(BaseModel):
     project: str
     machineType: str
     vmCount: int = 1
-    durationMinDays: int = 1
-    durationMaxDays: int = 7
-    startFrom: str = ""  # YYYY-MM-DD
-    startTo: str = ""    # YYYY-MM-DD
+    startDate: str = ""          # YYYY-MM-DD
+    flexibilityDays: int = 0     # 0, 1, 2, or 3
+    durationDays: int = 7
     regions: list[str] = []
     zones: list[str] = []
 
@@ -88,10 +92,12 @@ class ScanRequest(BaseModel):
 # --- REST Endpoints ---
 
 @app.post("/api/auth/check")
-async def check_auth(body: dict = {}):
+async def check_auth(body: dict = None):
     """Check gcloud authentication and project access."""
     import httpx
 
+    if body is None:
+        body = {}
     project = body.get("project", "")
     result = {
         "authenticated": False,
@@ -221,16 +227,35 @@ async def calendar_advisory(req: CalendarAdvisoryRequest):
             project=req.project,
             machine_type=req.machineType,
             vm_count=req.vmCount,
-            duration_min_days=req.durationMinDays,
-            duration_max_days=req.durationMaxDays,
-            start_from=req.startFrom,
-            start_to=req.startTo,
+            start_date=req.startDate,
+            flexibility_days=req.flexibilityDays,
+            duration_days=req.durationDays,
             regions=req.regions if req.regions else None,
             zones=req.zones if req.zones else None,
         )
         return result
     except Exception as e:
         logger.error(f"Calendar advisory error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/advisory/calendar/splits")
+async def calendar_splits(req: CalendarAdvisoryRequest):
+    """Query Calendar Advisory with split analysis for capacity planning."""
+    try:
+        result = await find_best_splits(
+            project=req.project,
+            machine_type=req.machineType,
+            vm_count=req.vmCount,
+            start_date=req.startDate,
+            flexibility_days=req.flexibilityDays,
+            duration_days=req.durationDays,
+            regions=req.regions if req.regions else None,
+            zones=req.zones if req.zones else None,
+        )
+        return result
+    except Exception as e:
+        logger.error(f"Calendar splits error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -286,6 +311,7 @@ async def websocket_scan(websocket: WebSocket):
     await websocket.accept()
     logger.info("WebSocket client connected")
 
+    sessions = []
     session = None
 
     try:
@@ -362,6 +388,8 @@ async def websocket_scan(websocket: WebSocket):
                     dws_calendar_duration_hours=scan_req.dwsCalendarDurationHours,
                 )
 
+                sessions.append(session)
+
                 # Send session ID to client
                 await websocket.send_json({
                     "type": "session_created",
@@ -412,8 +440,8 @@ async def websocket_scan(websocket: WebSocket):
 
     except WebSocketDisconnect:
         logger.info("WebSocket client disconnected")
-        if session:
-            session.cancel()
+        for s in sessions:
+            s.cancel()
     except json.JSONDecodeError:
         logger.error("Invalid JSON received")
     except Exception as e:
@@ -437,7 +465,10 @@ if os.path.exists(frontend_dist):
     @app.get("/{full_path:path}")
     async def serve_frontend(full_path: str):
         """Serve the React frontend for any non-API route."""
-        file_path = os.path.join(frontend_dist, full_path)
+        file_path = os.path.realpath(os.path.join(frontend_dist, full_path))
+        safe_root = os.path.realpath(frontend_dist)
+        if not file_path.startswith(safe_root):
+            return FileResponse(os.path.join(frontend_dist, "index.html"))
         if os.path.isfile(file_path):
             return FileResponse(file_path)
         return FileResponse(os.path.join(frontend_dist, "index.html"))

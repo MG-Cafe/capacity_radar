@@ -57,6 +57,7 @@ const DEFAULT_PRIORITY = {
 
 // Strip emojis from backend messages for clean GCP-style display
 function stripEmojis(text) {
+  if (!text) return ''
   return text
     .replace(/[\u{1F300}-\u{1F9FF}]|[\u{2600}-\u{27BF}]|[\u{FE00}-\u{FE0F}]|[\u{1F000}-\u{1F02F}]|[\u{1F680}-\u{1F6FF}]|[\u{200D}]|[\u{20E3}]|[\u{FE0F}]|[\u{E0020}-\u{E007F}]|[✅❌⚠️🔑📋🔍📌🔄📡⏳🛑⚡🎉🏷️]/gu, '')
     .replace(/^\s+/, '')
@@ -128,15 +129,17 @@ export default function ScanningPanel({ machineTypes = [], loading: mtLoading, p
     const supportedMethods = METHOD_OPTIONS.filter(m => supported[m.value] !== false).map(m => m.value)
     if (supportedMethods.length === 0) return
 
-    let changed = false
-    const updated = priorities.map(p => {
-      if (supported[p.method] === false) {
-        changed = true
-        return { ...p, method: supportedMethods[0], zones: [] }
-      }
-      return p
+    setPriorities(prev => {
+      let changed = false
+      const updated = prev.map(p => {
+        if (supported[p.method] === false) {
+          changed = true
+          return { ...p, method: supportedMethods[0], zones: [] }
+        }
+        return p
+      })
+      return changed ? updated : prev
     })
-    if (changed) setPriorities(updated)
   }, [selectedMachineInfo, showUnsupported])
 
   // Cleanup WebSocket on unmount
@@ -234,12 +237,15 @@ export default function ScanningPanel({ machineTypes = [], loading: mtLoading, p
       setScanning(false)
     }
 
-    ws.onclose = () => { setScanning(false) }
+    ws.onclose = () => {
+      setScanning(false)
+      setScanStatus(prev => prev === 'running' ? 'cancelled' : prev)
+    }
   }, [machineType, project, priorities, minVmCount, maxVmCount, totalHuntingHours, availableZones, executionMode])
 
   const cancelScan = useCallback(() => {
     if (wsRef.current) {
-      if (sessionId) {
+      if (sessionId && wsRef.current.readyState === WebSocket.OPEN) {
         wsRef.current.send(JSON.stringify({ action: 'cancel', sessionId }))
       }
       // Also close the WebSocket to force-stop
@@ -249,13 +255,13 @@ export default function ScanningPanel({ machineTypes = [], loading: mtLoading, p
           wsRef.current = null
         }
         setScanning(false)
-        if (!scanStatus || scanStatus === 'running') setScanStatus('cancelled')
+        setScanStatus(prev => (!prev || prev === 'running') ? 'cancelled' : prev)
       }, 1000)
     } else {
       setScanning(false)
       setScanStatus('cancelled')
     }
-  }, [sessionId, scanStatus])
+  }, [sessionId])
 
   const canStart = machineType && project && priorities.length > 0 && !scanning
 
