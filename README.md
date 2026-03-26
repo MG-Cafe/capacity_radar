@@ -316,6 +316,6 @@ The Cloud Run service account needs `Compute Admin` and `TPU Admin` roles.
 
 ---
 
-## License
+## Disclaimer
 
-This project is provided as-is for internal use. See your organization's policies for distribution guidelines.
+This is **not** an official Google product. There is no SLA, warranty, or guarantee of any kind. Use at your own risk. For any issues or potential bugs, contact **emgi@google.com**.
