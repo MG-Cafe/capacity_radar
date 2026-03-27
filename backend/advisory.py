@@ -293,28 +293,15 @@ async def _query_calendar_advisory_region(
     from gpu_data import MACHINE_TO_FAMILY
     tpu_info = _get_tpu_info(machine_type)
 
-    # Build targetResources based on GPU vs TPU
+    # Both GPU and TPU use specificSkuResources with their machine type
+    target_resources = {
+        "specificSkuResources": {
+            "instanceCount": str(vm_count),
+            "machineType": machine_type,
+        }
+    }
     if tpu_info:
-        # TPU: use acceleratorResources with the TPU accelerator type
-        # Format: tpu-v6e-4 (prefix + chip count)
-        accel_prefix = tpu_info["accelerator_prefix"]
-        chip_count = tpu_info["chips"]
-        accelerator_type = f"tpu-{accel_prefix}-{chip_count}"
-        target_resources = {
-            "acceleratorResources": {
-                "acceleratorType": accelerator_type,
-                "acceleratorCount": str(vm_count),
-            }
-        }
-        logger.info(f"TPU Calendar Advisory: {machine_type} -> acceleratorType={accelerator_type}, count={vm_count}")
-    else:
-        # GPU: use specificSkuResources
-        target_resources = {
-            "specificSkuResources": {
-                "instanceCount": str(vm_count),
-                "machineType": machine_type,
-            }
-        }
+        logger.info(f"TPU Calendar Advisory: {machine_type} (chips={tpu_info['chips']}, count={vm_count})")
 
     family = MACHINE_TO_FAMILY.get(machine_type, "")
     dense_families = ("A4", "A3 Ultra", "A3 Mega", "A3 High", "A3 Edge")
