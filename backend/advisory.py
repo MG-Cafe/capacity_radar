@@ -59,8 +59,8 @@ def _resolve_regions_zones(regions, zones):
 
 
 def _check_tpu(machine_type: str, results: dict, api_name: str = "calendar") -> bool:
-    """Check if machine_type is a TPU. Returns True (skip) only for unsupported TPUs.
-    For TPUs that support the given API, returns False so the caller proceeds.
+    """Check if machine_type is a TPU. Returns True (skip) for all TPUs since the
+    Calendar Advisory API does not support TPU machine families.
     """
     from gpu_data import TPU_TYPES
     is_tpu = any(machine_type in t.get("machine_types", {}) for t in TPU_TYPES.values())
@@ -72,11 +72,6 @@ def _check_tpu(machine_type: str, results: dict, api_name: str = "calendar") -> 
     zones_list = tpu_info.get("zones", [])
     supported = tpu_info.get("supported", {})
 
-    # For Calendar Advisory: allow TPU types that support DWS Calendar (v6e, v5p, v5e)
-    if api_name == "calendar" and supported.get("dws_calendar"):
-        return False  # Don't block — let the caller proceed with the API call
-
-    # For unsupported TPU types, populate info and return True (skip)
     results["tpuInfo"] = {
         "type": tpu_gen,
         "name": tpu_info.get("gpu", f"Cloud TPU {tpu_gen}"),
@@ -87,14 +82,26 @@ def _check_tpu(machine_type: str, results: dict, api_name: str = "calendar") -> 
         "supported": supported,
         "specs": tpu_info.get("machine_types", {}).get(machine_type, {}),
     }
-    results["message"] = (
-        f"Calendar Advisory API is not available for {tpu_info.get('gpu', tpu_gen)} ({machine_type}). "
-        f"This TPU type supports: "
-        f"{'On-Demand, ' if supported.get('on_demand') else ''}"
-        f"{'Spot, ' if supported.get('spot') else ''}"
-        f"{'DWS Flex' if supported.get('dws_flex') else ''}"
-        f". Available in {len(zones_list)} zone(s) across {len(set(z.rsplit('-', 1)[0] for z in zones_list))} region(s)."
-    )
+
+    if supported.get("dws_calendar"):
+        # TPU supports DWS Calendar reservations, but the Advisory API doesn't support TPU
+        results["message"] = (
+            f"The Calendar Advisory API does not support TPU machine types. "
+            f"However, {tpu_info.get('gpu', tpu_gen)} ({machine_type}) fully supports "
+            f"DWS Calendar reservations — you can create them directly using the Scan & Deploy tab. "
+            f"Available in {len(zones_list)} zone(s) across "
+            f"{len(set(z.rsplit('-', 1)[0] for z in zones_list))} region(s)."
+        )
+    else:
+        results["message"] = (
+            f"Calendar Advisory API is not available for {tpu_info.get('gpu', tpu_gen)} ({machine_type}). "
+            f"This TPU type supports: "
+            f"{'On-Demand, ' if supported.get('on_demand') else ''}"
+            f"{'Spot, ' if supported.get('spot') else ''}"
+            f"{'DWS Flex' if supported.get('dws_flex') else ''}"
+            f". Available in {len(zones_list)} zone(s) across "
+            f"{len(set(z.rsplit('-', 1)[0] for z in zones_list))} region(s)."
+        )
     return True
 
 
