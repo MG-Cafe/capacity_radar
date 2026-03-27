@@ -58,16 +58,25 @@ def _resolve_regions_zones(regions, zones):
     return target_regions, allowed_zones
 
 
-def _check_tpu(machine_type: str, results: dict) -> bool:
-    """If machine_type is a TPU, populate results with TPU info and return True."""
+def _check_tpu(machine_type: str, results: dict, api_name: str = "calendar") -> bool:
+    """Check if machine_type is a TPU. Returns True (skip) only for unsupported TPUs.
+    For TPUs that support the given API, returns False so the caller proceeds.
+    """
     from gpu_data import TPU_TYPES
     is_tpu = any(machine_type in t.get("machine_types", {}) for t in TPU_TYPES.values())
     if not is_tpu:
         return False
+
     tpu_gen = next((k for k, v in TPU_TYPES.items() if machine_type in v.get("machine_types", {})), "")
     tpu_info = TPU_TYPES.get(tpu_gen, {})
     zones_list = tpu_info.get("zones", [])
     supported = tpu_info.get("supported", {})
+
+    # For Calendar Advisory: allow TPU types that support DWS Calendar (v6e, v5p, v5e)
+    if api_name == "calendar" and supported.get("dws_calendar"):
+        return False  # Don't block — let the caller proceed with the API call
+
+    # For unsupported TPU types, populate info and return True (skip)
     results["tpuInfo"] = {
         "type": tpu_gen,
         "name": tpu_info.get("gpu", f"Cloud TPU {tpu_gen}"),
@@ -79,15 +88,30 @@ def _check_tpu(machine_type: str, results: dict) -> bool:
         "specs": tpu_info.get("machine_types", {}).get(machine_type, {}),
     }
     results["message"] = (
-        f"Calendar Advisory API is not available for TPU types. "
-        f"However, {tpu_info.get('gpu', tpu_gen)} ({machine_type}) supports: "
+        f"Calendar Advisory API is not available for {tpu_info.get('gpu', tpu_gen)} ({machine_type}). "
+        f"This TPU type supports: "
         f"{'On-Demand, ' if supported.get('on_demand') else ''}"
         f"{'Spot, ' if supported.get('spot') else ''}"
-        f"{'DWS Calendar, ' if supported.get('dws_calendar') else ''}"
         f"{'DWS Flex' if supported.get('dws_flex') else ''}"
         f". Available in {len(zones_list)} zone(s) across {len(set(z.rsplit('-', 1)[0] for z in zones_list))} region(s)."
     )
     return True
+
+
+def _get_tpu_info(machine_type: str):
+    """Get TPU info if machine_type is a TPU type, else None."""
+    from gpu_data import TPU_TYPES
+    for tpu_gen, tpu_info in TPU_TYPES.items():
+        if machine_type in tpu_info.get("machine_types", {}):
+            mt_spec = tpu_info["machine_types"][machine_type]
+            return {
+                "gen": tpu_gen,
+                "info": tpu_info,
+                "chips": mt_spec.get("chips", 1),
+                "accelerator_prefix": tpu_info.get("accelerator_prefix", tpu_gen),
+                "zones": tpu_info.get("zones", []),
+            }
+    return None
 
 
 async def get_calendar_advisory(
@@ -112,9 +136,16 @@ async def get_calendar_advisory(
     start_str, end_str = _compute_time_window(start_date, flexibility_days, duration_days)
 
     target_regions, allowed_zones = _resolve_regions_zones(regions, zones)
+
+    # Auto-resolve regions from TPU/GPU zone data if none specified
     if not target_regions:
-        results["errors"].append("No regions or zones specified for calendar advisory.")
-        return results
+        from gpu_data import get_zones_for_machine_type
+        auto_zones = get_zones_for_machine_type(machine_type)
+        if auto_zones:
+            target_regions = set(z.rsplit("-", 1)[0] for z in auto_zones)
+        else:
+            results["errors"].append("No regions or zones specified for calendar advisory.")
+            return results
 
     token = await get_gcloud_access_token()
 
@@ -161,9 +192,16 @@ async def find_best_splits(
 
     start_str, end_str = _compute_time_window(start_date, flexibility_days, duration_days)
     target_regions, allowed_zones = _resolve_regions_zones(regions, zones)
+
+    # Auto-resolve regions from TPU/GPU zone data if none specified
     if not target_regions:
-        results["errors"].append("No regions or zones specified.")
-        return results
+        from gpu_data import get_zones_for_machine_type
+        auto_zones = get_zones_for_machine_type(machine_type)
+        if auto_zones:
+            target_regions = set(z.rsplit("-", 1)[0] for z in auto_zones)
+        else:
+            results["errors"].append("No regions or zones specified.")
+            return results
 
     token = await get_gcloud_access_token()
 
@@ -253,15 +291,35 @@ async def _query_calendar_advisory_region(
     max_duration_secs = duration_max_days * 86400
 
     from gpu_data import MACHINE_TO_FAMILY
-    family = MACHINE_TO_FAMILY.get(machine_type, "")
-    dense_families = ("A4", "A3 Ultra", "A3 Mega", "A3 High", "A3 Edge")
-    spec_body = {
-        "targetResources": {
+    tpu_info = _get_tpu_info(machine_type)
+
+    # Build targetResources based on GPU vs TPU
+    if tpu_info:
+        # TPU: use acceleratorResources with the TPU accelerator type
+        # Format: tpu-v6e-4 (prefix + chip count)
+        accel_prefix = tpu_info["accelerator_prefix"]
+        chip_count = tpu_info["chips"]
+        accelerator_type = f"tpu-{accel_prefix}-{chip_count}"
+        target_resources = {
+            "acceleratorResources": {
+                "acceleratorType": accelerator_type,
+                "acceleratorCount": str(vm_count),
+            }
+        }
+        logger.info(f"TPU Calendar Advisory: {machine_type} -> acceleratorType={accelerator_type}, count={vm_count}")
+    else:
+        # GPU: use specificSkuResources
+        target_resources = {
             "specificSkuResources": {
                 "instanceCount": str(vm_count),
                 "machineType": machine_type,
             }
-        },
+        }
+
+    family = MACHINE_TO_FAMILY.get(machine_type, "")
+    dense_families = ("A4", "A3 Ultra", "A3 Mega", "A3 High", "A3 Edge")
+    spec_body = {
+        "targetResources": target_resources,
         "timeRangeSpec": {
             "minDuration": f"{min_duration_secs}s",
             "maxDuration": f"{max_duration_secs}s",
@@ -269,7 +327,7 @@ async def _query_calendar_advisory_region(
             "startTimeNotLaterThan": end_time,
         },
     }
-    if family in dense_families:
+    if not tpu_info and family in dense_families:
         spec_body["deploymentType"] = "DENSE"
 
     body = {
