@@ -97,6 +97,55 @@ class ScanningSession:
         self.result = None
         self._token = None
         self._token_time = None
+        self._deploy_start_time = datetime.now(timezone.utc)
+
+    def _tracking_labels(self, method: str) -> dict:
+        """Generate GCP resource labels for tracking deployments created by Capacity Radar.
+        These labels flow through to Cloud Billing exports for revenue attribution."""
+        return {
+            "created-by": "capacity-radar",
+            "capacity-radar-session": self.session_id[:8],
+            "capacity-radar-method": method.replace("_", "-"),
+            "capacity-radar-machine": self.machine_type[:63].replace(".", "-"),
+            "capacity-radar-count": str(self.vm_count),
+            "capacity-radar-project": self.project[:63].replace(".", "-"),
+        }
+
+    def _log_deployment_event(self, method: str, zone: str, resource_name: str,
+                               success: bool, resource_type: str = "reservation",
+                               extra: dict = None):
+        """Log deployment event to a JSON-lines file for tracking and analytics.
+        Each line is a JSON object with deployment details."""
+        import os
+        event = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "session_id": self.session_id,
+            "project": self.project,
+            "machine_type": self.machine_type,
+            "vm_count": self.vm_count,
+            "method": method,
+            "zone": zone,
+            "region": zone.rsplit("-", 1)[0] if zone else "",
+            "resource_name": resource_name,
+            "resource_type": resource_type,
+            "success": success,
+            "duration_seconds": (datetime.now(timezone.utc) - self._deploy_start_time).total_seconds(),
+        }
+        if extra:
+            event.update(extra)
+
+        # Log to structured logger for Cloud Logging / stdout
+        logger.info(f"DEPLOYMENT_EVENT: {json.dumps(event)}")
+
+        # Also append to local JSONL file for offline analysis
+        log_dir = os.path.join(os.path.dirname(__file__), "deployment_logs")
+        os.makedirs(log_dir, exist_ok=True)
+        log_file = os.path.join(log_dir, "deployments.jsonl")
+        try:
+            with open(log_file, "a") as f:
+                f.write(json.dumps(event) + "\n")
+        except Exception as e:
+            logger.warning(f"Failed to write deployment log: {e}")
 
     async def _get_token(self) -> str:
         now = datetime.now(timezone.utc)
@@ -514,6 +563,7 @@ class ScanningSession:
                 "instanceProperties": {"machineType": self.machine_type}
             },
             "specificReservationRequired": True,
+            "resourcePolicies": {},
         }
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
@@ -527,10 +577,12 @@ class ScanningSession:
                     if verified:
                         self.result = {"method": "on_demand", "reservation_name": res_name,
                                        "zone": zone, "vm_count": self.vm_count}
+                        self._log_deployment_event("on_demand", zone, res_name, True, "reservation")
                         await self.emit("info",
                             f"✅ On-demand reservation verified: {res_name} in {zone} ({self.vm_count} VMs)")
                         return True
                     else:
+                        self._log_deployment_event("on_demand", zone, res_name, False, "reservation")
                         return False
                 else:
                     await self.emit("warning",
@@ -585,6 +637,7 @@ class ScanningSession:
             },
             "timeWindow": {"startTime": start_str, "endTime": end_str},
             "shareSettings": {"shareType": "LOCAL"},
+            "labels": self._tracking_labels("dws-calendar"),
         }
         if family in dense_families:
             body["deploymentType"] = "DENSE"
@@ -597,18 +650,19 @@ class ScanningSession:
                 if resp.status_code in (200, 201):
                     verified = await self._wait_for_operation(data, zone, "DWS Calendar")
                     if verified:
-                        # Future reservation submitted, but NOT yet approved/deployed.
-                        # Check if the reservation is in APPROVED status by polling.
                         approved = await self._poll_future_reservation_status(
                             zone, res_name, max_polls=60, poll_interval=10)
                         if approved:
                             self.result = {"method": "dws_calendar", "reservation_name": res_name,
                                            "zone": zone, "vm_count": self.vm_count,
                                            "start_time": start_str, "end_time": end_str}
+                            self._log_deployment_event("dws_calendar", zone, res_name, True, "future_reservation")
                             await self.emit("info",
                                 f"✅ DWS Calendar reservation APPROVED and deployed: {res_name} in {zone}")
                             return True
                         else:
+                            self._log_deployment_event("dws_calendar", zone, res_name, False, "future_reservation",
+                                                       {"status": "pending_approval"})
                             await self.emit("info",
                                 f"📋 DWS Calendar submitted in {zone}: {res_name}. "
                                 f"Pending Google approval — not yet deployed. Continuing to try other options...")
@@ -721,6 +775,7 @@ class ScanningSession:
                     if verified:
                         self.result = {"method": "dws_flex", "reservation_name": res_name,
                                        "zone": zone, "vm_count": self.vm_count}
+                        self._log_deployment_event("dws_flex", zone, res_name, True, "reservation")
                         await self.emit("info",
                             f"✅ DWS Flex reservation verified: {res_name} in {zone}")
                         return True
@@ -776,6 +831,7 @@ class ScanningSession:
             },
             "timeWindow": {"startTime": start_str, "endTime": end_str},
             "shareSettings": {"shareType": "LOCAL"},
+            "labels": self._tracking_labels("dws-flex"),
         }
         if family in dense_families:
             body["deploymentType"] = "DENSE"
@@ -794,6 +850,7 @@ class ScanningSession:
                             self.result = {"method": "dws_flex", "reservation_name": res_name,
                                            "zone": zone, "vm_count": self.vm_count,
                                            "start_time": start_str, "end_time": end_str}
+                            self._log_deployment_event("dws_flex", zone, res_name, True, "future_reservation")
                             await self.emit("info",
                                 f"✅ DWS Flex (future reservation) APPROVED: {res_name} in {zone}")
                             return True
@@ -913,6 +970,7 @@ class ScanningSession:
                     }]
                     body["scheduling"]["onHostMaintenance"] = "TERMINATE"
 
+            body["labels"] = self._tracking_labels("spot")
             headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
             try:
@@ -941,6 +999,8 @@ class ScanningSession:
         if created:
             self.result = {"method": "spot", "instance_names": created,
                            "zone": zone, "vm_count": len(created)}
+            self._log_deployment_event("spot", zone, ",".join(created), True, "instance",
+                                       {"instance_count": len(created)})
             return True
         return False
 
@@ -1011,6 +1071,7 @@ class ScanningSession:
         body = {
             "acceleratorType": accel_type,
             "runtimeVersion": "tpu-vm-tf-2.17.0-pjrt",
+            "labels": self._tracking_labels("on-demand"),
         }
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
@@ -1025,6 +1086,7 @@ class ScanningSession:
                         if ready:
                             self.result = {"method": "on_demand", "tpu_node": node_name,
                                            "zone": zone, "accelerator_type": accel_type}
+                            self._log_deployment_event("on_demand", zone, node_name, True, "tpu_node")
                             await self.emit("info",
                                 f"✅ TPU node READY: {node_name} ({accel_type}) in {zone}")
                             return True
@@ -1105,6 +1167,7 @@ class ScanningSession:
                     "node": {
                         "acceleratorType": accel_type,
                         "runtimeVersion": "tpu-vm-tf-2.17.0-pjrt",
+                        "labels": self._tracking_labels("dws-flex"),
                     },
                     "nodeId": f"{qr_name}-node",
                 }]
@@ -1126,6 +1189,7 @@ class ScanningSession:
                     if ready:
                         self.result = {"method": "dws_flex", "queued_resource": qr_name,
                                        "zone": zone, "accelerator_type": accel_type}
+                        self._log_deployment_event("dws_flex", zone, qr_name, True, "tpu_queued_resource")
                         await self.emit("info",
                             f"✅ TPU Queued Resource ACTIVE: {qr_name} ({accel_type}) in {zone}")
                         return True
@@ -1176,6 +1240,7 @@ class ScanningSession:
                     "node": {
                         "acceleratorType": accel_type,
                         "runtimeVersion": "tpu-vm-tf-2.17.0-pjrt",
+                        "labels": self._tracking_labels("dws-calendar"),
                     },
                     "nodeId": f"{qr_name}-node",
                 }]
@@ -1194,13 +1259,13 @@ class ScanningSession:
                 resp = await client.post(url, json=body, headers=headers)
                 data = resp.json()
                 if resp.status_code in (200, 201):
-                    # Poll for ACTIVE state
                     ready = await self._poll_tpu_queued_resource(
                         zone, qr_name, "TPU Calendar")
                     if ready:
                         self.result = {"method": "dws_calendar", "queued_resource": qr_name,
                                        "zone": zone, "accelerator_type": accel_type,
                                        "start_time": start_str, "end_time": end_str}
+                        self._log_deployment_event("dws_calendar", zone, qr_name, True, "tpu_queued_resource")
                         await self.emit("info",
                             f"✅ TPU Calendar resource ACTIVE: {qr_name} ({accel_type}) in {zone}")
                         return True
@@ -1236,6 +1301,7 @@ class ScanningSession:
                     "node": {
                         "acceleratorType": accel_type,
                         "runtimeVersion": "tpu-vm-tf-2.17.0-pjrt",
+                        "labels": self._tracking_labels("spot"),
                     },
                     "nodeId": f"{qr_name}-node",
                 }]
@@ -1249,12 +1315,12 @@ class ScanningSession:
                 resp = await client.post(url, json=body, headers=headers)
                 data = resp.json()
                 if resp.status_code in (200, 201):
-                    # Poll for ACTIVE state
                     ready = await self._poll_tpu_queued_resource(
                         zone, qr_name, "TPU Spot")
                     if ready:
                         self.result = {"method": "spot", "queued_resource": qr_name,
                                        "zone": zone, "accelerator_type": accel_type}
+                        self._log_deployment_event("spot", zone, qr_name, True, "tpu_queued_resource")
                         await self.emit("info",
                             f"✅ Spot TPU ACTIVE: {qr_name} ({accel_type}) in {zone}")
                         return True
