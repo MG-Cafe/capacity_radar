@@ -475,7 +475,7 @@ CONSUMPTION_SUPPORT = {
         "A4X Max": True, "A4X": True, "A4": True,
         "A3 Ultra": True, "A3 Edge": True, "A3 Mega": True, "A3 High": True,
         "A2 Ultra": False, "A2 Standard": False, "A2 Mega": False,
-        "G4": False, "G2": False, "N1": False,
+        "G4": True, "G2": True, "N1": True,
     },
 }
 
