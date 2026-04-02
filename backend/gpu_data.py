@@ -288,6 +288,39 @@ MACHINE_TYPES = {
         "category": "GPU",
         "accelerator_type": "nvidia-l4",
     },
+    # N1 (T4) — guest accelerator GPUs
+    "n1-standard-4": {
+        "gpu": "NVIDIA T4",
+        "chip": "T4",
+        "gpu_count": 1,
+        "family": "N1",
+        "category": "GPU",
+        "accelerator_type": "nvidia-tesla-t4",
+    },
+    "n1-standard-8": {
+        "gpu": "NVIDIA T4",
+        "chip": "T4",
+        "gpu_count": 1,
+        "family": "N1",
+        "category": "GPU",
+        "accelerator_type": "nvidia-tesla-t4",
+    },
+    "n1-standard-16": {
+        "gpu": "NVIDIA T4",
+        "chip": "T4",
+        "gpu_count": 2,
+        "family": "N1",
+        "category": "GPU",
+        "accelerator_type": "nvidia-tesla-t4",
+    },
+    "n1-standard-32": {
+        "gpu": "NVIDIA T4",
+        "chip": "T4",
+        "gpu_count": 4,
+        "family": "N1",
+        "category": "GPU",
+        "accelerator_type": "nvidia-tesla-t4",
+    },
 }
 
 # GPU type to supported zones mapping
@@ -371,6 +404,31 @@ GPU_ZONES = {
         "us-west1-a", "us-west1-b", "us-west1-c",
         "us-west4-a", "us-west4-c"
     ],
+    "N1 (T4)": [
+        "asia-east1-a", "asia-east1-c",
+        "asia-east2-a", "asia-east2-c",
+        "asia-northeast1-a", "asia-northeast1-c",
+        "asia-northeast3-b", "asia-northeast3-c",
+        "asia-south1-a", "asia-south1-b",
+        "asia-southeast1-a", "asia-southeast1-b", "asia-southeast1-c",
+        "asia-southeast2-a", "asia-southeast2-b",
+        "australia-southeast1-a", "australia-southeast1-c",
+        "europe-central2-b", "europe-central2-c",
+        "europe-west1-b", "europe-west1-c", "europe-west1-d",
+        "europe-west2-a", "europe-west2-b",
+        "europe-west3-b",
+        "europe-west4-a", "europe-west4-b", "europe-west4-c",
+        "me-west1-b", "me-west1-c",
+        "northamerica-northeast1-c",
+        "southamerica-east1-a", "southamerica-east1-b", "southamerica-east1-c",
+        "us-central1-a", "us-central1-b", "us-central1-c", "us-central1-f",
+        "us-east1-b", "us-east1-c", "us-east1-d",
+        "us-east4-a", "us-east4-b", "us-east4-c",
+        "us-west1-a", "us-west1-b",
+        "us-west2-b", "us-west2-c",
+        "us-west3-b",
+        "us-west4-a", "us-west4-b"
+    ],
 }
 
 # Map machine type to its family for zone lookup
@@ -390,6 +448,7 @@ FAMILY_TO_GPU_ZONE_KEY = {
     "A2 Mega": "A2 Standard (A100 40GB)",
     "G4": "G4 (RTX PRO 6000)",
     "G2": "G2 (L4)",
+    "N1": "N1 (T4)",
 }
 
 # Consumption model support matrix
@@ -398,25 +457,25 @@ CONSUMPTION_SUPPORT = {
         "A4X Max": False, "A4X": True, "A4": False,
         "A3 Ultra": False, "A3 Edge": True, "A3 Mega": True, "A3 High": True,
         "A2 Ultra": True, "A2 Standard": True, "A2 Mega": True,
-        "G4": True, "G2": True,
+        "G4": True, "G2": True, "N1": True,
     },
     "spot": {
         "A4X Max": True, "A4X": True, "A4": True,
         "A3 Ultra": True, "A3 Edge": True, "A3 Mega": True, "A3 High": True,
         "A2 Ultra": True, "A2 Standard": True, "A2 Mega": True,
-        "G4": True, "G2": True,
+        "G4": True, "G2": True, "N1": True,
     },
     "dws_calendar": {
         "A4X Max": False, "A4X": False, "A4": True,
         "A3 Ultra": True, "A3 Edge": True, "A3 Mega": True, "A3 High": True,
         "A2 Ultra": False, "A2 Standard": False, "A2 Mega": False,
-        "G4": False, "G2": False,
+        "G4": False, "G2": False, "N1": False,
     },
     "dws_flex": {
         "A4X Max": True, "A4X": True, "A4": True,
         "A3 Ultra": True, "A3 Edge": True, "A3 Mega": True, "A3 High": True,
         "A2 Ultra": False, "A2 Standard": False, "A2 Mega": False,
-        "G4": False, "G2": False,
+        "G4": False, "G2": False, "N1": False,
     },
 }
 
