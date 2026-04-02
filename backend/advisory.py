@@ -566,6 +566,7 @@ async def _query_spot_advisory_region(
     Endpoint: POST .../regions/{region}/advice/capacity
     """
     import httpx
+    from gpu_data import MACHINE_TYPES
 
     url = (
         f"https://compute.googleapis.com/compute/alpha/projects/{project}"
@@ -577,6 +578,23 @@ async def _query_spot_advisory_region(
         "Content-Type": "application/json",
     }
 
+    # Build instanceProperties with GPU accelerators if applicable
+    # For guest accelerator GPUs (T4, L4), we must include the accelerator
+    # in the request, otherwise the API only checks CPU VM availability
+    instance_props = {
+        "scheduling": {
+            "provisioningModel": "SPOT",
+        }
+    }
+    machine_info = MACHINE_TYPES.get(machine_type, {})
+    accel_type = machine_info.get("accelerator_type")
+    if accel_type:
+        gpu_count = machine_info.get("gpu_count", 1)
+        instance_props["guestAccelerators"] = [{
+            "acceleratorType": accel_type,
+            "acceleratorCount": gpu_count,
+        }]
+
     body = {
         "distributionPolicy": {"targetShape": "ANY_SINGLE_ZONE"},
         "instanceFlexibilityPolicy": {
@@ -586,11 +604,7 @@ async def _query_spot_advisory_region(
                 }
             }
         },
-        "instanceProperties": {
-            "scheduling": {
-                "provisioningModel": "SPOT",
-            }
-        },
+        "instanceProperties": instance_props,
         "size": 1,
     }
 
