@@ -688,6 +688,276 @@ async def _query_spot_advisory_region(
     return recommendations
 
 
+# --- DWS Flex Start Capacity Advisory ---------------------------------------
+#
+# The Flex Start Capacity Advisory uses the same alpha "advice/capacity"
+# endpoint as the Spot advisory, but with provisioningModel=FLEX_START and a
+# maxRunDuration. It returns, per zone shard, an estimatedWaitDuration — how
+# long a DWS Flex Start request for the requested shape would likely wait in
+# the queue before capacity is granted.
+#
+# NOTE: This is a Preview capability and is only available for allow-listed
+# (whitelisted) projects. Non-whitelisted projects receive HTTP 400
+# "The service is not available for this project."
+
+# Sentinel value the API returns when it cannot predict near-term capacity.
+# ~31.7 years in seconds; treat as "no near-term capacity / unknown wait".
+FLEX_WAIT_SENTINEL_SECONDS = 999999999
+
+
+def _parse_duration_seconds(value) -> int | None:
+    """Parse a protobuf Duration string like '86400s' (or a number) to int seconds."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    s = str(value).strip()
+    if s.endswith("s"):
+        s = s[:-1]
+    try:
+        return int(float(s))
+    except ValueError:
+        return None
+
+
+def _flex_wait_label(wait_seconds: int | None) -> tuple[str, str]:
+    """Map an estimated wait duration (seconds) to (availability, humanWait).
+
+    availability: HIGH / MODERATE / LOW / NONE / UNKNOWN
+    humanWait: human-readable wait string.
+    """
+    if wait_seconds is None:
+        return "UNKNOWN", "Unknown"
+    if wait_seconds >= FLEX_WAIT_SENTINEL_SECONDS:
+        return "NONE", "No near-term capacity"
+    if wait_seconds <= 0:
+        return "HIGH", "Immediate (~0s)"
+
+    mins = wait_seconds / 60.0
+    hours = wait_seconds / 3600.0
+    days = wait_seconds / 86400.0
+    if wait_seconds < 3600:
+        human = f"~{int(round(mins))} min"
+    elif wait_seconds < 86400:
+        human = f"~{hours:.1f} hr"
+    else:
+        human = f"~{days:.1f} days"
+
+    if wait_seconds <= 900:            # <= 15 min
+        availability = "HIGH"
+    elif wait_seconds <= 21600:        # <= 6 hr
+        availability = "MODERATE"
+    else:
+        availability = "LOW"
+    return availability, human
+
+
+async def get_flex_advisory(
+    project: str,
+    machine_type: str,
+    size: int = 1,
+    max_run_duration_hours: int = 24,
+    regions: list[str] | None = None,
+    zones: list[str] | None = None,
+) -> dict:
+    """
+    Query the DWS Flex Start Capacity Advisory API (Preview / whitelisted).
+
+    Returns, per zone, the estimated wait duration for a FLEX_START request of
+    `size` instances of `machine_type` running for up to `max_run_duration_hours`.
+    """
+    results = {"recommendations": [], "errors": []}
+
+    # TPU machine types are not supported by the Capacity Advisory API
+    from gpu_data import TPU_TYPES
+    is_tpu = any(machine_type in t.get("machine_types", {}) for t in TPU_TYPES.values())
+    if is_tpu:
+        tpu_gen = next((k for k, v in TPU_TYPES.items() if machine_type in v.get("machine_types", {})), "")
+        tpu_info = TPU_TYPES.get(tpu_gen, {})
+        zones_list = tpu_info.get("zones", [])
+        supported = tpu_info.get("supported", {})
+        results["tpuInfo"] = {
+            "type": tpu_gen,
+            "name": tpu_info.get("gpu", f"Cloud TPU {tpu_gen}"),
+            "machineType": machine_type,
+            "zones": zones_list,
+            "regions": sorted(set(z.rsplit("-", 1)[0] for z in zones_list)),
+            "topologies": tpu_info.get("topologies", []),
+            "supported": supported,
+            "specs": tpu_info.get("machine_types", {}).get(machine_type, {}),
+        }
+        results["message"] = (
+            f"The Flex Start Capacity Advisory API does not support TPU machine types. "
+            f"DWS Flex Start {'is' if supported.get('dws_flex') else 'is NOT'} supported for "
+            f"{tpu_info.get('gpu', tpu_gen)} — for TPUs use the Scan & Deploy tab (Queued Resources)."
+        )
+        return results
+
+    target_regions, allowed_zones = _resolve_regions_zones(regions, zones)
+
+    if not target_regions:
+        results["errors"].append("No regions or zones specified for flex advisory.")
+        return results
+
+    token = await get_gcloud_access_token()
+
+    max_run_secs = max(1, int(max_run_duration_hours)) * 3600
+
+    tasks = []
+    for region in sorted(target_regions):
+        tasks.append(_query_flex_advisory_region(
+            token, project, region, machine_type, size, max_run_secs
+        ))
+
+    region_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    for region, result in zip(sorted(target_regions), region_results):
+        if isinstance(result, Exception):
+            results["errors"].append(f"{region}: {str(result)}")
+        elif result:
+            for rec in result:
+                zone = rec.get("zone", "")
+                if not allowed_zones or zone in allowed_zones or zone == "N/A":
+                    results["recommendations"].append(rec)
+
+    return results
+
+
+async def _query_flex_advisory_region(
+    token: str, project: str, region: str,
+    machine_type: str, size: int, max_run_secs: int,
+) -> list[dict]:
+    """Query DWS Flex Start capacity advisory for a single region (alpha).
+
+    Endpoint: POST .../compute/alpha/projects/{project}/regions/{region}/advice/capacity
+    """
+    import httpx
+    from gpu_data import MACHINE_TYPES
+
+    url = (
+        f"https://compute.googleapis.com/compute/alpha/projects/{project}"
+        f"/regions/{region}/advice/capacity"
+    )
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+
+    instance_props = {
+        "scheduling": {
+            "provisioningModel": "FLEX_START",
+            "maxRunDuration": f"{max_run_secs}s",
+        }
+    }
+    # Guest-accelerator GPUs (T4, L4) must be requested explicitly
+    machine_info = MACHINE_TYPES.get(machine_type, {})
+    accel_type = machine_info.get("accelerator_type")
+    if accel_type:
+        gpu_count = machine_info.get("gpu_count", 1)
+        instance_props["guestAccelerators"] = [{
+            "acceleratorType": accel_type,
+            "acceleratorCount": gpu_count,
+        }]
+
+    body = {
+        "instanceProperties": instance_props,
+        "instanceFlexibilityPolicy": {
+            "instanceSelections": {
+                "instance-selection-1": {
+                    "machineTypes": [machine_type],
+                }
+            }
+        },
+        "distributionPolicy": {"targetShape": "ANY_SINGLE_ZONE"},
+        "size": max(1, int(size)),
+    }
+
+    recommendations = []
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(url, json=body, headers=headers)
+
+            if resp.status_code == 200:
+                data = resp.json()
+                for rec in data.get("recommendations", []):
+                    scores = rec.get("scores", {})
+                    wait_secs = _parse_duration_seconds(scores.get("estimatedWaitDuration"))
+                    availability, human_wait = _flex_wait_label(wait_secs)
+
+                    shards = rec.get("shards", [])
+                    if not shards:
+                        recommendations.append({
+                            "region": region,
+                            "zone": "N/A",
+                            "machineType": machine_type,
+                            "instanceCount": size,
+                            "availability": availability,
+                            "estimatedWaitSeconds": wait_secs,
+                            "estimatedWait": human_wait,
+                            "provisioningModel": "FLEX_START",
+                            "source": "Flex Start Capacity Advisory",
+                        })
+                    for shard in shards:
+                        zone_url = shard.get("zone", "")
+                        zone = zone_url.split("/zones/")[-1] if "/zones/" in zone_url else zone_url
+                        recommendations.append({
+                            "region": region,
+                            "zone": zone,
+                            "machineType": shard.get("machineType", machine_type),
+                            "instanceCount": shard.get("instanceCount", size),
+                            "availability": availability,
+                            "estimatedWaitSeconds": wait_secs,
+                            "estimatedWait": human_wait,
+                            "provisioningModel": shard.get("provisioningModel", "FLEX_START"),
+                            "source": "Flex Start Capacity Advisory",
+                        })
+
+                if not data.get("recommendations"):
+                    recommendations.append({
+                        "region": region,
+                        "zone": "N/A",
+                        "machineType": machine_type,
+                        "instanceCount": size,
+                        "availability": "NONE",
+                        "estimatedWait": "No recommendation returned",
+                        "provisioningModel": "FLEX_START",
+                        "source": "Flex Start Capacity Advisory",
+                    })
+            elif resp.status_code == 400:
+                # Most common: project not whitelisted for the advisory Preview.
+                error_msg = resp.text
+                try:
+                    error_msg = resp.json().get("error", {}).get("message", resp.text)
+                except Exception:
+                    pass
+                raise RuntimeError(
+                    f"{error_msg} (Flex Start Capacity Advisory is a Preview feature — "
+                    f"your project may need to be whitelisted for this region.)"
+                )
+            elif resp.status_code == 404:
+                raise RuntimeError(
+                    f"Flex Start Capacity Advisory not available for {region}. "
+                    "This API is in Preview and requires project whitelisting."
+                )
+            else:
+                error_msg = resp.text
+                try:
+                    error_msg = resp.json().get("error", {}).get("message", resp.text)
+                except Exception:
+                    pass
+                raise RuntimeError(
+                    f"Flex Start Capacity Advisory API returned {resp.status_code}: {error_msg}"
+                )
+    except httpx.TimeoutException:
+        raise RuntimeError(f"Timeout querying flex advisory for {region}")
+    except httpx.ConnectError:
+        raise RuntimeError(f"Connection error querying flex advisory for {region}")
+
+    return recommendations
+
+
 async def _spot_advisory_gcloud_fallback(
     project: str, region: str, machine_type: str
 ) -> list[dict]:
