@@ -21,8 +21,10 @@ COPY backend/ ./backend/
 COPY --from=frontend-build /app/frontend/dist/ ./frontend/dist/
 
 # Environment
+# DEMO_MODE disables real deployment (safe for a hosted demo). Set DEFAULT_PROJECT
+# to a project ID if you want the demo to pre-fill one; leave empty otherwise.
 ENV DEMO_MODE=true
-ENV DEFAULT_PROJECT=northam-ce-mlai-tpu
+ENV DEFAULT_PROJECT=""
 ENV PORT=8080
 
 EXPOSE 8080
