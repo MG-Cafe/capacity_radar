@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from gpu_data import get_all_machine_types_info, get_zones_for_machine_type, MACHINE_TYPES, get_chip_groups, TPU_TYPES
-from advisory import get_calendar_advisory, get_spot_advisory, find_best_splits
+from advisory import get_calendar_advisory, get_spot_advisory, find_best_splits, get_flex_advisory
 from hunter import (
     create_session, cancel_session, get_session,
     active_sessions, ConsumptionModel, ScanningStatus,
@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 # Cloud Run / Demo mode configuration
 DEMO_MODE = _os.environ.get("DEMO_MODE", "false").lower() in ("true", "1", "yes")
-DEFAULT_PROJECT = _os.environ.get("DEFAULT_PROJECT", "northam-ce-mlai-tpu")
+DEFAULT_PROJECT = _os.environ.get("DEFAULT_PROJECT", "")
 
 app = FastAPI(
     title="GPU Radar",
@@ -67,6 +67,15 @@ class CalendarAdvisoryRequest(BaseModel):
 class SpotAdvisoryRequest(BaseModel):
     project: str
     machineType: str
+    regions: list[str] = []
+    zones: list[str] = []
+
+
+class FlexAdvisoryRequest(BaseModel):
+    project: str
+    machineType: str
+    size: int = 1                    # number of instances requested
+    maxRunDurationHours: int = 24    # DWS Flex Start max run duration (up to 7 days)
     regions: list[str] = []
     zones: list[str] = []
 
@@ -287,6 +296,24 @@ async def spot_advisory(req: SpotAdvisoryRequest):
         return result
     except Exception as e:
         logger.error(f"Spot advisory error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/advisory/flex")
+async def flex_advisory(req: FlexAdvisoryRequest):
+    """Query DWS Flex Start Capacity Advisory API (Preview / whitelisted projects)."""
+    try:
+        result = await get_flex_advisory(
+            project=req.project,
+            machine_type=req.machineType,
+            size=req.size,
+            max_run_duration_hours=req.maxRunDurationHours,
+            regions=req.regions if req.regions else None,
+            zones=req.zones if req.zones else None,
+        )
+        return result
+    except Exception as e:
+        logger.error(f"Flex advisory error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

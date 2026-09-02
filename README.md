@@ -36,6 +36,7 @@ Capacity Radar automates finding and securing GPU/TPU capacity across Google Clo
   - **Check Availability** — Query with your exact parameters (start date, flexibility, duration)
   - **Find Best Plan** — Queries at multiple VM count levels (100%, 75%, 50%, 25%, 1 VM) to show how to split capacity across multiple smaller reservations
 - **Spot VM Advisory** — Check spot capacity availability and preemption risk across zones
+- **DWS Flex Start Advisory** _(Preview — requires a whitelisted project)_ — For a chosen machine type, size, and region/zone, estimates how long a DWS Flex Start request would wait in the queue before capacity is granted. This capability is in Preview and is only available for allow-listed (whitelisted) projects; non-whitelisted projects receive `The service is not available for this project.`
 
 ### Supported Hardware
 
@@ -148,7 +149,7 @@ capacity_radar/
 │   ├── src/
 │   │   ├── App.jsx          # Main app — auth drawer, tab navigation
 │   │   └── components/
-│   │       ├── AdvisoryPanel.jsx       # Calendar & Spot advisory queries
+│   │       ├── AdvisoryPanel.jsx       # Calendar, Spot & DWS Flex advisory queries
 │   │       ├── ScanningPanel.jsx       # Scan & Deploy configuration + live logs
 │   │       └── MachineTypeSelector.jsx # Category → Chip → Machine type picker
 │   ├── vite.config.js       # Vite config with API proxy
@@ -177,6 +178,7 @@ capacity_radar/
 | `POST` | `/api/advisory/calendar` | Query DWS Calendar Advisory API |
 | `POST` | `/api/advisory/calendar/splits` | Find best capacity split plan |
 | `POST` | `/api/advisory/spot` | Query Spot VM Advisory API |
+| `POST` | `/api/advisory/flex` | Query DWS Flex Start Capacity Advisory API (Preview — whitelisted projects) |
 | `WS` | `/ws/scan` | WebSocket for real-time scan & deploy |
 
 ---
@@ -318,4 +320,4 @@ The Cloud Run service account needs `Compute Admin` and `TPU Admin` roles.
 
 ## Disclaimer
 
-This is **not** an official Google product. There is no SLA, warranty, or guarantee of any kind. Use at your own risk. For any issues or potential bugs, contact **emgi@google.com**.
+This is **not** an official Google product. There is no SLA, warranty, or guarantee of any kind. Use at your own risk.

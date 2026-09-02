@@ -12,7 +12,10 @@ import uuid
 import httpx
 from datetime import datetime, timedelta, timezone
 
-PROJECT = sys.argv[1] if len(sys.argv) > 1 else "northam-ce-mlai-tpu"
+PROJECT = sys.argv[1] if len(sys.argv) > 1 else ""
+if not PROJECT:
+    print("Usage: python test_consumption_models.py <PROJECT_ID>")
+    sys.exit(1)
 
 # One representative machine type per family + one zone
 TEST_CASES = [

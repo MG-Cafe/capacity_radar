@@ -11,6 +11,7 @@ import {
 import SearchIcon from '@mui/icons-material/Search'
 import CalendarMonthIcon from '@mui/icons-material/CalendarMonth'
 import BoltIcon from '@mui/icons-material/Bolt'
+import HourglassBottomIcon from '@mui/icons-material/HourglassBottom'
 import MachineTypeSelector from './MachineTypeSelector'
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined'
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
@@ -35,6 +36,10 @@ export default function AdvisoryPanel({ machineTypes = [], loading: mtLoading, p
   })
   const [flexibilityDays, setFlexibilityDays] = useState(0)
 
+  // Flex-specific params (all adjustable)
+  const [flexSize, setFlexSize] = useState(1)
+  const [flexMaxRunHours, setFlexMaxRunHours] = useState(24)
+
   // Results state
   const [calendarResults, setCalendarResults] = useState(null)
   const [splitsResults, setSplitsResults] = useState(null)
@@ -47,8 +52,14 @@ export default function AdvisoryPanel({ machineTypes = [], loading: mtLoading, p
   const [spotError, setSpotError] = useState(null)
   const [showCalendarErrors, setShowCalendarErrors] = useState(false)
   const [showSpotErrors, setShowSpotErrors] = useState(false)
+  const [showFlexErrors, setShowFlexErrors] = useState(false)
   const [showUnsupported, setShowUnsupported] = useState(false)
   const [calendarQueryInfo, setCalendarQueryInfo] = useState(null)
+
+  // Flex results state
+  const [flexResults, setFlexResults] = useState(null)
+  const [flexLoading, setFlexLoading] = useState(false)
+  const [flexError, setFlexError] = useState(null)
 
   const selectedMachineInfo = useMemo(() => {
     return machineTypes.find(mt => mt.machineType === machineType)
@@ -161,7 +172,37 @@ export default function AdvisoryPanel({ machineTypes = [], loading: mtLoading, p
     }
   }
 
+  const queryFlexAdvisory = async () => {
+    setFlexLoading(true)
+    setFlexError(null)
+    setFlexResults(null)
+    try {
+      const { zones, regions } = getZonesAndRegions()
+      const resp = await fetch('/api/advisory/flex', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          project, machineType,
+          size: flexSize,
+          maxRunDurationHours: flexMaxRunHours,
+          regions, zones,
+        }),
+      })
+      if (!resp.ok) {
+        let errMsg = `HTTP ${resp.status}`
+        try { const err = await resp.json(); errMsg = err.detail || errMsg } catch { /* non-JSON */ }
+        throw new Error(errMsg)
+      }
+      setFlexResults(await resp.json())
+    } catch (e) {
+      setFlexError(e.message)
+    } finally {
+      setFlexLoading(false)
+    }
+  }
+
   const supportsCalendar = selectedMachineInfo?.supported?.dws_calendar
+  const supportsFlex = selectedMachineInfo?.supported?.dws_flex
   const canQuery = machineType && project
   const anyLoading = calendarLoading || splitsLoading
 
@@ -173,7 +214,7 @@ export default function AdvisoryPanel({ machineTypes = [], loading: mtLoading, p
           Capacity Advisory
         </Typography>
         <Typography variant="body1" color="text.secondary">
-          Check GPU availability using DWS Calendar Mode Advisory and Spot VM Advisory APIs.
+          Check GPU availability using DWS Calendar Mode, Spot VM, and DWS Flex Start Advisory APIs.
         </Typography>
       </Box>
 
@@ -472,9 +513,6 @@ export default function AdvisoryPanel({ machineTypes = [], loading: mtLoading, p
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
               <BoltIcon sx={{ color: '#f9ab00', fontSize: 22 }} />
               <Typography variant="h4">Spot VM Advisory</Typography>
-              <Tooltip title="This API is currently in Preview. Your project may need whitelisting." arrow>
-                <Chip label="Preview" size="small" sx={{ bgcolor: '#fce8e6', color: '#d93025', height: 20, fontSize: '0.65rem', cursor: 'help' }} />
-              </Tooltip>
               <Tooltip title="Shows spot VM availability and preemption risk by zone. Works for all VM types.">
                 <InfoOutlinedIcon sx={{ fontSize: 16, color: '#80868b', cursor: 'help' }} />
               </Tooltip>
@@ -542,6 +580,114 @@ export default function AdvisoryPanel({ machineTypes = [], loading: mtLoading, p
             {!spotResults && !spotLoading && !spotError && !machineType && (
               <Box sx={{ textAlign: 'center', py: 3, color: '#80868b' }}>
                 <BoltIcon sx={{ fontSize: 40, mb: 1, opacity: 0.3 }} />
+                <Typography variant="body2">Select a machine type above first</Typography>
+              </Box>
+            )}
+          </Paper>
+        </Grid>
+        )}
+
+        {/* DWS Flex Start Advisory */}
+        {(showUnsupported || !machineType || supportsFlex) && (
+        <Grid item xs={12} lg={6}>
+          <Paper sx={{ p: 3, height: '100%' }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
+              <HourglassBottomIcon sx={{ color: '#9334e6', fontSize: 22 }} />
+              <Typography variant="h4">DWS Flex Start Advisory</Typography>
+              <Tooltip title="This API is in Preview and is only available for whitelisted projects. If not whitelisted, requests return 'The service is not available for this project.'" arrow>
+                <Chip label="Preview · Whitelisted only" size="small" sx={{ bgcolor: '#f3e8fd', color: '#9334e6', height: 20, fontSize: '0.62rem', cursor: 'help' }} />
+              </Tooltip>
+              <Tooltip title="Estimates how long a DWS Flex Start request would wait in the queue before capacity is granted, per zone, for the selected machine type and size.">
+                <InfoOutlinedIcon sx={{ fontSize: 16, color: '#80868b', cursor: 'help' }} />
+              </Tooltip>
+              {flexLoading && <CircularProgress size={18} sx={{ ml: 'auto' }} />}
+            </Box>
+
+            {!supportsFlex && machineType && (
+              <Alert severity="info" sx={{ mb: 2 }}>
+                DWS Flex Start is not supported for {machineType}.
+              </Alert>
+            )}
+
+            {(supportsFlex || !machineType) && (
+              <Box sx={{ bgcolor: '#f3e8fd', borderRadius: 2, p: 2, mb: 2 }}>
+                <Grid container spacing={1.5}>
+                  <Grid item xs={6}>
+                    <TextField fullWidth type="number" label="VM Count (size)" value={flexSize}
+                      onChange={(e) => setFlexSize(Math.max(1, parseInt(e.target.value) || 1))}
+                      size="small" inputProps={{ min: 1 }}
+                      helperText="Instances to request" />
+                  </Grid>
+                  <Grid item xs={6}>
+                    <TextField fullWidth type="number" label="Max Run Duration (hours)" value={flexMaxRunHours}
+                      onChange={(e) => setFlexMaxRunHours(Math.max(1, Math.min(168, parseInt(e.target.value) || 1)))}
+                      size="small" inputProps={{ min: 1, max: 168 }}
+                      helperText="Up to 168h (7 days)" />
+                  </Grid>
+                </Grid>
+                <Button
+                  fullWidth variant="contained" sx={{ mt: 1.5, bgcolor: '#9334e6', '&:hover': { bgcolor: '#7b2bc4' } }}
+                  onClick={queryFlexAdvisory}
+                  disabled={!canQuery || flexLoading || !supportsFlex}
+                  startIcon={flexLoading ? <CircularProgress size={16} /> : <HourglassBottomIcon />}
+                >
+                  Check Availability
+                </Button>
+              </Box>
+            )}
+
+            {flexError && (
+              <Alert severity="error" sx={{ mb: 2 }}>
+                <AlertTitle>Flex Start Advisory Error</AlertTitle>
+                {flexError}
+              </Alert>
+            )}
+
+            {flexResults && (
+              <>
+                {flexResults.tpuInfo && (
+                  <TpuInfoAlert info={flexResults.tpuInfo} message={flexResults.message} />
+                )}
+                {(flexResults.recommendations || []).length > 0 ? (
+                  <TableContainer>
+                    <Table size="small">
+                      <TableHead>
+                        <TableRow>
+                          <TableCell>Zone</TableCell>
+                          <TableCell>Instances</TableCell>
+                          <TableCell>Availability</TableCell>
+                          <TableCell>Est. Wait</TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {(flexResults.recommendations || [])
+                          .sort((a, b) => {
+                            const order = { HIGH: 0, MODERATE: 1, LOW: 2, NONE: 3, UNKNOWN: 4 }
+                            return (order[a.availability] ?? 5) - (order[b.availability] ?? 5)
+                          })
+                          .map((rec, idx) => (
+                          <TableRow key={idx} hover
+                            sx={rec.availability === 'HIGH' ? { bgcolor: '#e6f4ea' } : {}}>
+                            <TableCell sx={{ fontWeight: 500 }}>{rec.zone}</TableCell>
+                            <TableCell>{rec.instanceCount ?? '—'}</TableCell>
+                            <TableCell><AvailabilityChip availability={rec.availability} /></TableCell>
+                            <TableCell sx={{ fontSize: '0.75rem', color: '#5f6368' }}>{rec.estimatedWait || '—'}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+                ) : (
+                  <Alert severity="warning">No Flex Start advisory recommendations found.</Alert>
+                )}
+                <ErrorsCollapse errors={flexResults.errors}
+                  show={showFlexErrors} setShow={setShowFlexErrors} />
+              </>
+            )}
+
+            {!flexResults && !flexLoading && !flexError && !machineType && (
+              <Box sx={{ textAlign: 'center', py: 3, color: '#80868b' }}>
+                <HourglassBottomIcon sx={{ fontSize: 40, mb: 1, opacity: 0.3 }} />
                 <Typography variant="body2">Select a machine type above first</Typography>
               </Box>
             )}
