@@ -69,6 +69,18 @@ Capacity Radar automates finding and securing GPU/TPU capacity across Google Clo
 
 ---
 
+## Two ways to use it
+
+Capacity Radar can be used **either** as a web app **or** as an **AI Agent Skill**
+(drive everything from chat in an agent like Claude, Google Antigravity, etc.).
+
+- **Web app** — run the FastAPI backend + React UI (see Quick Start below).
+- **Agent Skill** — install the bundled skill so an AI agent can authenticate,
+  run advisories, and deploy capacity through conversation. See
+  **[Use as an Agent Skill](#use-as-an-agent-skill)**.
+
+---
+
 ## Quick Start
 
 ### Prerequisites
@@ -259,6 +271,68 @@ Calendar future reservations use `reservationMode: CALENDAR` with DENSE deployme
 ### DWS Flex Behavior
 - **GPUs**: Uses Compute Engine reservations with retry logic (no real queue — each attempt succeeds or fails immediately)
 - **TPUs**: Uses the TPU Queued Resource API with actual server-side queuing
+
+---
+
+## Use as an Agent Skill
+
+Capacity Radar ships with a self-contained **AI Agent Skill** so any agent (e.g.
+Claude, Google Antigravity, or other agentic IDEs) can drive **all** of the app's
+functionality through chat — authenticate, run any advisory (Calendar / Spot /
+DWS Flex, any chip/region/size), and configure + launch a priority-based
+deployment — asking the user follow-up questions for any missing input, exactly
+like the web UI.
+
+The skill lives in **[`skills/capacity-radar/`](skills/capacity-radar/)** and is
+built as a `SKILL.md` plus a portable CLI (`scripts/capacity_radar.py`) that
+reuses the app's own backend, so results are identical to the UI.
+
+### Install (one line)
+
+Point your agent at this repo/skill folder, for example:
+
+```
+Install the skill at https://github.com/MG-Cafe/capacity_radar (skills/capacity-radar)
+```
+
+…or copy `skills/capacity-radar/` into your agent's skills directory.
+
+### Prerequisites
+
+```bash
+pip install -r backend/requirements.txt      # backend deps the skill reuses
+gcloud auth application-default login         # one-time auth (or use the skill's `auth login`)
+```
+
+### What the agent can do
+
+- **Authenticate** — check ADC + project access; help the user log in if needed.
+- **Discover** — list GPU/TPU chips, machine types, and supported zones.
+- **Advise (safe / read-only)** — Spot, DWS Calendar (+ best-split plan), and
+  DWS Flex Start (Preview / whitelisted) advisories for any chip/region/size.
+- **Deploy** — priority-based scan & deploy (sequential or parallel). This
+  creates **real, billable** resources, so the skill requires explicit
+  confirmation (`--yes`) before it will proceed.
+
+### Run the CLI directly (no agent required)
+
+```bash
+# Auth + discovery
+python skills/capacity-radar/scripts/capacity_radar.py auth check --project my-project
+python skills/capacity-radar/scripts/capacity_radar.py catalog chips
+
+# Advisories
+python skills/capacity-radar/scripts/capacity_radar.py advise spot --project my-project --machine-type a3-highgpu-8g --regions us-central1
+python skills/capacity-radar/scripts/capacity_radar.py advise flex --project my-project --machine-type a3-highgpu-8g --size 4 --max-run-hours 24 --regions us-central1
+
+# Deploy (creates real resources — requires --yes)
+python skills/capacity-radar/scripts/capacity_radar.py deploy \
+  --project my-project --machine-type a3-highgpu-8g --vm-count 2 \
+  --priority spot:us-central1-b,us-east4-a --priority dws_flex:us-central1-b --yes
+```
+
+See **[`skills/capacity-radar/SKILL.md`](skills/capacity-radar/SKILL.md)** for the
+full agent workflow, command reference, and safety rules.
 
 ---
 
