@@ -64,7 +64,9 @@ function stripEmojis(text) {
 }
 
 export default function ScanningPanel({ machineTypes = [], loading: mtLoading, project = '', userToken = '' }) {
-  
+
+  const authHeaders = userToken ? { Authorization: `Bearer ${userToken}` } : {}
+
   const [category, setCategory] = useState('GPU')
   const [chip, setChip] = useState('')
   const [machineType, setMachineType] = useState('')
@@ -74,6 +76,18 @@ export default function ScanningPanel({ machineTypes = [], loading: mtLoading, p
   const [priorities, setPriorities] = useState([{ ...DEFAULT_PRIORITY }])
   const [executionMode, setExecutionMode] = useState('sequential')
   const [showUnsupported, setShowUnsupported] = useState(false)
+
+  // VPC network selection (empty = auto-select: prefer 'default', else first
+  // VPC with a subnet in the region). Fixes deploys on projects without a
+  // 'default' VPC and lets the user pick or create one.
+  const [networks, setNetworks] = useState([])          // [{name, subnetworks:[...]}]
+  const [hasDefaultNetwork, setHasDefaultNetwork] = useState(false)
+  const [selectedNetwork, setSelectedNetwork] = useState('')       // '' = auto
+  const [selectedSubnetwork, setSelectedSubnetwork] = useState('') // '' = auto
+  const [networksLoading, setNetworksLoading] = useState(false)
+  const [networkError, setNetworkError] = useState('')
+  const [creatingNetwork, setCreatingNetwork] = useState(false)
+
 
   // Scanning state
   const [scanning, setScanning] = useState(false)
@@ -149,6 +163,67 @@ export default function ScanningPanel({ machineTypes = [], loading: mtLoading, p
     }
   }, [])
 
+  // Region to scope subnetwork listing to (derived from the first available zone)
+  const primaryRegion = useMemo(() => {
+    const z = availableZones[0] || ''
+    return z ? z.slice(0, z.lastIndexOf('-')) : ''
+  }, [availableZones])
+
+  // Load VPC networks (+ regional subnetworks) whenever project/region changes.
+  useEffect(() => {
+    if (!project) { setNetworks([]); setHasDefaultNetwork(false); return }
+    let cancelled = false
+    setNetworksLoading(true)
+    setNetworkError('')
+    const qs = new URLSearchParams({ project })
+    if (primaryRegion) qs.set('region', primaryRegion)
+    fetch(`/api/networks?${qs.toString()}`, { headers: authHeaders })
+      .then(r => r.json())
+      .then(data => {
+        if (cancelled) return
+        setNetworks(data.networks || [])
+        setHasDefaultNetwork(!!data.hasDefault)
+      })
+      .catch(err => { if (!cancelled) setNetworkError(String(err)) })
+      .finally(() => { if (!cancelled) setNetworksLoading(false) })
+    return () => { cancelled = true }
+  }, [project, primaryRegion, userToken])
+
+  // Subnetwork options for the currently selected network
+  const subnetOptions = useMemo(() => {
+    const net = networks.find(n => n.name === selectedNetwork)
+    return net ? (net.subnetworks || []) : []
+  }, [networks, selectedNetwork])
+
+  // Create a brand-new auto-mode VPC, then select it.
+  const handleCreateNetwork = useCallback(async () => {
+    const name = (window.prompt(
+      'New VPC network name (lowercase letters, numbers, hyphens):',
+      'capacity-radar-net'
+    ) || '').trim()
+    if (!name) return
+    setCreatingNetwork(true)
+    setNetworkError('')
+    try {
+      const resp = await fetch('/api/networks/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify({ project, name }),
+      })
+      const data = await resp.json()
+      if (!resp.ok) throw new Error(data.detail || 'Failed to create network')
+      // Refresh the list and select the new network.
+      setSelectedNetwork(name)
+      setSelectedSubnetwork('')
+      setNetworks(prev => prev.some(n => n.name === name) ? prev : [...prev, { name, subnetworks: [] }])
+    } catch (e) {
+      setNetworkError(String(e.message || e))
+    } finally {
+      setCreatingNetwork(false)
+    }
+  }, [project, userToken])
+
+
   // Priority management
   const addPriority = () => setPriorities([...priorities, { ...DEFAULT_PRIORITY }])
 
@@ -209,8 +284,11 @@ export default function ScanningPanel({ machineTypes = [], loading: mtLoading, p
         })),
         dwsCalendarDurationHours: 24,
         parallel: executionMode === 'parallel',
+        network: selectedNetwork || '',
+        subnetwork: selectedSubnetwork || '',
       }
       ws.send(JSON.stringify({ action: 'scan', config, userToken: userToken || undefined }))
+
     }
 
     ws.onmessage = (event) => {
@@ -241,7 +319,8 @@ export default function ScanningPanel({ machineTypes = [], loading: mtLoading, p
       setScanning(false)
       setScanStatus(prev => prev === 'running' ? 'cancelled' : prev)
     }
-  }, [machineType, project, priorities, minVmCount, maxVmCount, totalHuntingHours, availableZones, executionMode, userToken])
+  }, [machineType, project, priorities, minVmCount, maxVmCount, totalHuntingHours, availableZones, executionMode, userToken, selectedNetwork, selectedSubnetwork])
+
 
   const cancelScan = useCallback(() => {
     if (wsRef.current) {
@@ -330,7 +409,80 @@ export default function ScanningPanel({ machineTypes = [], loading: mtLoading, p
                 {minVmCount < maxVmCount && ` System will try for ${maxVmCount} VMs first, scaling down to ${minVmCount} if needed.`}
               </Typography>
             </Box>
+
+            {/* VPC Network selection (GPU + TPU). Empty = auto (prefer 'default'). */}
+            <Box sx={{ mt: 2, p: 1.5, bgcolor: '#f8f9fa', borderRadius: 1, border: '1px solid #e8eaed' }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mb: 1 }}>
+                <AccountTreeIcon sx={{ fontSize: 15, color: '#1a73e8' }} />
+                <Typography variant="caption" sx={{ fontWeight: 600, color: '#3c4043' }}>Network</Typography>
+                {networksLoading && <CircularProgress size={12} sx={{ ml: 0.5 }} />}
+                <Tooltip title="VPC network for the GPU VMs / TPU nodes. Leave on Auto to prefer a 'default' VPC, else the first VPC that has a subnet in the target region. Required on projects without a 'default' network.">
+                  <InfoOutlinedIcon sx={{ fontSize: 14, color: '#80868b', cursor: 'help' }} />
+                </Tooltip>
+              </Box>
+              <Grid container spacing={1.5}>
+                <Grid item xs={12} sm={6}>
+                  <FormControl fullWidth size="small" disabled={scanning || !project}>
+                    <InputLabel>Network</InputLabel>
+                    <Select
+                      value={selectedNetwork}
+                      label="Network"
+                      onChange={(e) => {
+                        const val = e.target.value
+                        if (val === '__create__') { handleCreateNetwork(); return }
+                        setSelectedNetwork(val)
+                        setSelectedSubnetwork('')
+                      }}
+                      renderValue={(val) => val || `Auto${hasDefaultNetwork ? " (default)" : ''}`}
+                    >
+                      <MenuItem value="">
+                        <em>Auto{hasDefaultNetwork ? ' — use "default" VPC' : ' — first available VPC'}</em>
+                      </MenuItem>
+                      {networks.map(n => (
+                        <MenuItem key={n.name} value={n.name}>{n.name}</MenuItem>
+                      ))}
+                      <Divider />
+                      <MenuItem value="__create__" sx={{ color: '#1a73e8' }}>
+                        <AddIcon sx={{ fontSize: 16, mr: 0.5 }} /> Create new VPC…
+                      </MenuItem>
+                    </Select>
+                  </FormControl>
+                </Grid>
+                <Grid item xs={12} sm={6}>
+                  <FormControl fullWidth size="small" disabled={scanning || !selectedNetwork || subnetOptions.length === 0}>
+                    <InputLabel>Subnetwork</InputLabel>
+                    <Select
+                      value={selectedSubnetwork}
+                      label="Subnetwork"
+                      onChange={(e) => setSelectedSubnetwork(e.target.value)}
+                      renderValue={(val) => val || 'Auto (region default)'}
+                    >
+                      <MenuItem value=""><em>Auto (region default)</em></MenuItem>
+                      {subnetOptions.map(sn => (
+                        <MenuItem key={sn} value={sn}>{sn}</MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                </Grid>
+              </Grid>
+              {!hasDefaultNetwork && !networksLoading && project && (
+                <Typography variant="caption" sx={{ display: 'block', mt: 0.75, color: '#b06000', fontSize: '0.68rem' }}>
+                  No "default" VPC in this project — pick a network above or create one (leaving Auto will use the first VPC with a subnet in the region).
+                </Typography>
+              )}
+              {creatingNetwork && (
+                <Typography variant="caption" sx={{ display: 'block', mt: 0.75, color: '#1a73e8', fontSize: '0.68rem' }}>
+                  Creating VPC network…
+                </Typography>
+              )}
+              {networkError && (
+                <Typography variant="caption" sx={{ display: 'block', mt: 0.75, color: '#d93025', fontSize: '0.68rem' }}>
+                  {networkError}
+                </Typography>
+              )}
+            </Box>
           </Paper>
+
 
           <Paper sx={{ p: 3 }}>
             <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>

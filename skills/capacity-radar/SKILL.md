@@ -58,6 +58,8 @@ python scripts/capacity_radar.py <group> <command> [flags...]
 | `catalog chips` | List GPU/TPU chips grouped, with machine types |
 | `catalog machine-types` | Full machine-type list + support matrix |
 | `catalog zones --machine-type <MT>` | Supported zones/regions for a machine type |
+| `catalog networks --project <ID> [--region <R>]` | List VPC networks (+ regional subnetworks); flags whether a `default` VPC exists |
+
 | `advise spot --project <ID> --machine-type <MT> [--regions r1,r2] [--zones z1,z2]` | Spot availability + preemption risk |
 | `advise calendar --project <ID> --machine-type <MT> --vm-count N --start-date YYYY-MM-DD --flexibility-days 0..3 --duration-days D [--regions/--zones]` | DWS Calendar availability |
 | `advise calendar-plan ... (same flags as calendar)` | DWS Calendar "best split" plan |
@@ -72,7 +74,22 @@ Repeatable. `method[:zones][:max_retries][:retry_interval]`
 - Examples: `spot:us-central1-b,us-east4-a`  ·  `dws_flex:us-central1-b:3:60`
 
 Extra deploy flags: `--name-prefix`, `--flex-max-wait-hours`, `--flex-usage-hours`,
-`--calendar-start`/`--calendar-end` (ISO datetime), `--calendar-duration-hours`.
+`--calendar-start`/`--calendar-end` (ISO datetime), `--calendar-duration-hours`,
+`--network`, `--subnetwork`.
+
+### Network / subnetwork selection (GPU + TPU)
+
+Both GPU VMs and TPU nodes need a VPC network. By default Cloud TPU uses a VPC
+literally named `default`; on projects without one, deploys fail with
+`The value "default" provided for field "Network"/"Subnetwork" does not exist`.
+
+- Leave `--network`/`--subnetwork` **empty** to auto-select: prefer a `default`
+  VPC, else the first VPC that has a subnetwork in the target region.
+- Run `catalog networks --project <ID> --region <R>` to list options and see
+  `hasDefault`. If there is no usable network, create one:
+  `gcloud compute networks create <name> --subnet-mode=auto` (or use the app UI's
+  "Create new VPC" option), then pass `--network <name>`.
+
 
 ## How to behave (agent workflow)
 
