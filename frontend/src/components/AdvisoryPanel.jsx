@@ -20,7 +20,8 @@ import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutline'
 import WarningAmberIcon from '@mui/icons-material/WarningAmber'
 import ErrorOutlineIcon from '@mui/icons-material/ErrorOutline'
 
-export default function AdvisoryPanel({ machineTypes = [], loading: mtLoading, project = '' }) {
+export default function AdvisoryPanel({ machineTypes = [], loading: mtLoading, project = '', userToken = '' }) {
+  const authHeaders = userToken ? { Authorization: `Bearer ${userToken}` } : {}
   // Shared config
   const [category, setCategory] = useState('GPU')
   const [chip, setChip] = useState('')
@@ -92,7 +93,7 @@ export default function AdvisoryPanel({ machineTypes = [], loading: mtLoading, p
       const { zones, regions } = getZonesAndRegions()
       const resp = await fetch('/api/advisory/calendar', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
         body: JSON.stringify({
           project, machineType, vmCount,
           startDate, flexibilityDays, durationDays,
@@ -128,7 +129,7 @@ export default function AdvisoryPanel({ machineTypes = [], loading: mtLoading, p
       const { zones, regions } = getZonesAndRegions()
       const resp = await fetch('/api/advisory/calendar/splits', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
         body: JSON.stringify({
           project, machineType, vmCount,
           startDate, flexibilityDays, durationDays,
@@ -156,7 +157,7 @@ export default function AdvisoryPanel({ machineTypes = [], loading: mtLoading, p
       const { zones, regions } = getZonesAndRegions()
       const resp = await fetch('/api/advisory/spot', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
         body: JSON.stringify({ project, machineType, regions, zones }),
       })
       if (!resp.ok) {
@@ -180,7 +181,7 @@ export default function AdvisoryPanel({ machineTypes = [], loading: mtLoading, p
       const { zones, regions } = getZonesAndRegions()
       const resp = await fetch('/api/advisory/flex', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
         body: JSON.stringify({
           project, machineType,
           size: flexSize,

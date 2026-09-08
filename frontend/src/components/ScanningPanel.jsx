@@ -63,7 +63,7 @@ function stripEmojis(text) {
     .replace(/^\s+/, '')
 }
 
-export default function ScanningPanel({ machineTypes = [], loading: mtLoading, project = '' }) {
+export default function ScanningPanel({ machineTypes = [], loading: mtLoading, project = '', userToken = '' }) {
   
   const [category, setCategory] = useState('GPU')
   const [chip, setChip] = useState('')
@@ -210,7 +210,7 @@ export default function ScanningPanel({ machineTypes = [], loading: mtLoading, p
         dwsCalendarDurationHours: 24,
         parallel: executionMode === 'parallel',
       }
-      ws.send(JSON.stringify({ action: 'scan', config }))
+      ws.send(JSON.stringify({ action: 'scan', config, userToken: userToken || undefined }))
     }
 
     ws.onmessage = (event) => {
@@ -241,7 +241,7 @@ export default function ScanningPanel({ machineTypes = [], loading: mtLoading, p
       setScanning(false)
       setScanStatus(prev => prev === 'running' ? 'cancelled' : prev)
     }
-  }, [machineType, project, priorities, minVmCount, maxVmCount, totalHuntingHours, availableZones, executionMode])
+  }, [machineType, project, priorities, minVmCount, maxVmCount, totalHuntingHours, availableZones, executionMode, userToken])
 
   const cancelScan = useCallback(() => {
     if (wsRef.current) {

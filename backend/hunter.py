@@ -46,6 +46,13 @@ CONSUMPTION_LABELS = {
 
 
 def _get_adc_token() -> str:
+    import os
+    if os.environ.get("AUTH_MODE", "local").lower() == "user":
+        raise RuntimeError(
+            "This server runs in bring-your-own-credentials mode and never uses "
+            "server-side credentials. Provide your own access token "
+            "(gcloud auth print-access-token) in the Authentication panel."
+        )
     import google.auth
     import google.auth.transport.requests
     creds, _ = google.auth.default(scopes=['https://www.googleapis.com/auth/cloud-platform'])
@@ -84,6 +91,7 @@ class ScanningSession:
         priorities: list[dict],
         send_update: Callable,
         dws_calendar_duration_hours: int = 24,
+        user_token: Optional[str] = None,
     ):
         self.session_id = session_id
         self.project = project
@@ -97,6 +105,7 @@ class ScanningSession:
         self.result = None
         self._token = None
         self._token_time = None
+        self._user_token = user_token
         self._deploy_start_time = datetime.now(timezone.utc)
 
     def _tracking_labels(self, method: str) -> dict:
@@ -148,6 +157,9 @@ class ScanningSession:
             logger.warning(f"Failed to write deployment log: {e}")
 
     async def _get_token(self) -> str:
+        # User-supplied tokens cannot be refreshed server-side; use as-is.
+        if self._user_token:
+            return self._user_token
         now = datetime.now(timezone.utc)
         if not self._token or not self._token_time or (now - self._token_time).total_seconds() > 3000:
             self._token = await get_access_token()
@@ -155,6 +167,8 @@ class ScanningSession:
         return self._token
 
     async def _refresh_token(self):
+        if self._user_token:
+            return
         self._token = await get_access_token()
         self._token_time = datetime.now(timezone.utc)
 
@@ -1382,12 +1396,13 @@ def _schedule_session_cleanup(session_id: str, delay: int = 300):
 
 
 def create_session(project, machine_type, vm_count, priorities, send_update,
-                   dws_calendar_duration_hours=24) -> ScanningSession:
+                   dws_calendar_duration_hours=24, user_token=None) -> ScanningSession:
     session_id = str(uuid.uuid4())
     session = ScanningSession(
         session_id=session_id, project=project, machine_type=machine_type,
         vm_count=vm_count, priorities=priorities, send_update=send_update,
         dws_calendar_duration_hours=dws_calendar_duration_hours,
+        user_token=user_token,
     )
     active_sessions[session_id] = session
     return session

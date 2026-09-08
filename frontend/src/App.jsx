@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react'
+import React, { useState, useEffect, useCallback, useRef } from 'react'
 import {
   AppBar, Toolbar, Typography, Box, Tabs, Tab, Container,
   IconButton, Chip, Tooltip, Paper, TextField, Button,
@@ -13,6 +13,7 @@ import ErrorIcon from '@mui/icons-material/Error'
 import LockOpenIcon from '@mui/icons-material/LockOpen'
 import ContentCopyIcon from '@mui/icons-material/ContentCopy'
 import AccountCircleIcon from '@mui/icons-material/AccountCircle'
+import GoogleIcon from '@mui/icons-material/Google'
 import FolderIcon from '@mui/icons-material/Folder'
 import LinkIcon from '@mui/icons-material/Link'
 import MenuIcon from '@mui/icons-material/Menu'
@@ -51,6 +52,12 @@ export default function App() {
   const [demoMode, setDemoMode] = useState(false)
   const [repoUrl, setRepoUrl] = useState('')
   const [demoDialogOpen, setDemoDialogOpen] = useState(false)
+  const [authMode, setAuthMode] = useState('local')
+  const [oauthClientId, setOauthClientId] = useState('')
+  const [signedInEmail, setSignedInEmail] = useState('')
+  const [tokenInput, setTokenInput] = useState('')
+  const [userToken, setUserToken] = useState(() => sessionStorage.getItem('cr_user_token') || '')
+  const projectInputRef = useRef('')
 
   useEffect(() => {
     // Fetch config and machine types in parallel
@@ -60,6 +67,12 @@ export default function App() {
     ]).then(([config, mtData]) => {
       setMachineTypes(mtData.machineTypes || [])
       setLoading(false)
+      if (config.authMode) setAuthMode(config.authMode)
+      if (config.oauthClientId) setOauthClientId(config.oauthClientId)
+      if (config.authMode === 'user' && sessionStorage.getItem('cr_user_token')) {
+        setLoginSuccess(true)
+        setSignedInEmail(sessionStorage.getItem('cr_user_email') || '')
+      }
       if (config.demoMode) {
         setDemoMode(true)
         setRepoUrl(config.repoUrl || '')
@@ -76,14 +89,15 @@ export default function App() {
     })
   }, [])
 
-  const checkAuth = useCallback(async () => {
+  const checkAuth = useCallback(async (tokenOverride) => {
     if (!projectInput.trim()) return
     setAuthChecking(true)
     try {
+      const token = typeof tokenOverride === 'string' ? tokenOverride : userToken
       const resp = await fetch('/api/auth/check', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ project: projectInput.trim() }),
+        body: JSON.stringify({ project: projectInput.trim(), token: token || undefined }),
       })
       const data = await resp.json()
       setAuthStatus(data)
@@ -97,7 +111,65 @@ export default function App() {
     } finally {
       setAuthChecking(false)
     }
-  }, [projectInput])
+  }, [projectInput, userToken])
+
+  const applyToken = useCallback(() => {
+    const token = tokenInput.trim()
+    if (!token) return
+    setUserToken(token)
+    sessionStorage.setItem('cr_user_token', token)
+    setTokenInput('')
+    setLoginSuccess(true)
+    setLoginError(null)
+    if (projectInput.trim()) {
+      setTimeout(() => checkAuth(token), 100)
+    }
+  }, [tokenInput, projectInput, checkAuth])
+
+  useEffect(() => { projectInputRef.current = projectInput }, [projectInput])
+
+  // Browser-based Google sign-in (Google Identity Services token client).
+  // Grants a cloud-platform scoped access token directly to this page —
+  // nothing to copy/paste, no credentials ever touch the server.
+  const signInWithGoogle = useCallback(() => {
+    setLoginError(null)
+    if (!window.google?.accounts?.oauth2) {
+      setLoginError('Google sign-in library failed to load. Refresh the page and try again.')
+      return
+    }
+    const client = window.google.accounts.oauth2.initTokenClient({
+      client_id: oauthClientId,
+      scope: 'openid email https://www.googleapis.com/auth/cloud-platform',
+      callback: async (resp) => {
+        if (resp.error || !resp.access_token) {
+          setLoginError(resp.error_description || resp.error || 'Sign-in failed.')
+          return
+        }
+        setUserToken(resp.access_token)
+        sessionStorage.setItem('cr_user_token', resp.access_token)
+        setLoginSuccess(true)
+        setLoginError(null)
+        try {
+          const info = await fetch(
+            `https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=${encodeURIComponent(resp.access_token)}`
+          ).then(r => r.json())
+          if (info.email) {
+            setSignedInEmail(info.email)
+            sessionStorage.setItem('cr_user_email', info.email)
+          }
+        } catch { /* email display is best-effort */ }
+        if (projectInputRef.current.trim()) {
+          setTimeout(() => checkAuth(resp.access_token), 100)
+        }
+      },
+      error_callback: (err) => {
+        if (err?.type !== 'popup_closed') {
+          setLoginError(err?.message || 'Sign-in was cancelled or blocked (check popup blocker).')
+        }
+      },
+    })
+    client.requestAccessToken()
+  }, [oauthClientId, checkAuth])
 
   const handleLogin = useCallback(async () => {
     setLoginInProgress(true)
@@ -252,25 +324,109 @@ export default function App() {
               <Typography variant="caption" sx={{ fontWeight: 600, color: '#3c4043', display: 'block', mb: 0.5 }}>
                 Step 1: Authenticate
               </Typography>
-              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1, fontSize: '0.65rem' }}>
-                Opens Google sign-in in your browser
-              </Typography>
-              <Button
-                fullWidth
-                variant={loginSuccess ? "outlined" : "contained"}
-                onClick={handleLogin}
-                disabled={loginInProgress}
-                size="small"
-                startIcon={
-                  loginInProgress ? <CircularProgress size={14} /> :
-                  loginSuccess ? <CheckCircleIcon /> : <LockOpenIcon />
-                }
-                color={loginSuccess ? "success" : "primary"}
-                sx={{ fontSize: '0.72rem', textTransform: 'none' }}
-              >
-                {loginInProgress ? 'Complete in browser...' :
-                 loginSuccess ? 'Authenticated ✓' : 'Authenticate with Google'}
-              </Button>
+              {authMode === 'user' && oauthClientId ? (
+                <>
+                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1, fontSize: '0.65rem' }}>
+                    Sign in with your Google account. Everything runs with YOUR credentials on YOUR project — the server never sees or stores them.
+                  </Typography>
+                  <Button
+                    fullWidth
+                    variant={loginSuccess ? "outlined" : "contained"}
+                    onClick={signInWithGoogle}
+                    size="small"
+                    startIcon={loginSuccess ? <CheckCircleIcon /> : <GoogleIcon />}
+                    color={loginSuccess ? "success" : "primary"}
+                    sx={{ fontSize: '0.72rem', textTransform: 'none' }}
+                  >
+                    {loginSuccess ? 'Signed in ✓ — click to refresh' : 'Sign in with Google'}
+                  </Button>
+                  {loginSuccess && signedInEmail && (
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mt: 0.5 }}>
+                      <AccountCircleIcon sx={{ fontSize: 13, color: '#137333' }} />
+                      <Typography variant="caption" sx={{ color: '#137333', fontWeight: 500, fontSize: '0.65rem' }}>
+                        {signedInEmail}
+                      </Typography>
+                    </Box>
+                  )}
+                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5, fontSize: '0.6rem' }}>
+                    Your session stays in this browser tab and expires after about 1 hour — just sign in again to refresh.
+                  </Typography>
+                </>
+              ) : authMode === 'user' ? (
+                <>
+                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5, fontSize: '0.65rem' }}>
+                    Uses YOUR Google Cloud credentials — nothing runs on our project. Get a token with one command (no install needed via Cloud Shell):
+                  </Typography>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mb: 0.75 }}>
+                    <code style={{ background: '#f1f3f4', padding: '2px 6px', borderRadius: 3, fontSize: '0.62rem', flex: 1 }}>
+                      gcloud auth print-access-token
+                    </code>
+                    <IconButton size="small" onClick={() => copyCmd('gcloud auth print-access-token')} sx={{ p: 0.2 }}>
+                      <ContentCopyIcon sx={{ fontSize: 12 }} />
+                    </IconButton>
+                  </Box>
+                  <Button
+                    fullWidth
+                    variant="outlined"
+                    size="small"
+                    href="https://shell.cloud.google.com/?show=terminal"
+                    target="_blank"
+                    rel="noopener"
+                    startIcon={<CloudIcon sx={{ fontSize: 14 }} />}
+                    sx={{ fontSize: '0.68rem', textTransform: 'none', mb: 1 }}
+                  >
+                    Open Google Cloud Shell (browser)
+                  </Button>
+                  <TextField
+                    fullWidth
+                    type="password"
+                    label="Access Token"
+                    value={tokenInput}
+                    onChange={(e) => setTokenInput(e.target.value)}
+                    placeholder="ya29..."
+                    size="small"
+                    sx={{ mb: 1, '& .MuiInputBase-input': { fontSize: '0.75rem' } }}
+                    onKeyDown={(e) => e.key === 'Enter' && applyToken()}
+                  />
+                  <Button
+                    fullWidth
+                    variant={loginSuccess ? "outlined" : "contained"}
+                    onClick={applyToken}
+                    disabled={!tokenInput.trim() && !loginSuccess}
+                    size="small"
+                    startIcon={loginSuccess ? <CheckCircleIcon /> : <LockOpenIcon />}
+                    color={loginSuccess ? "success" : "primary"}
+                    sx={{ fontSize: '0.72rem', textTransform: 'none' }}
+                  >
+                    {loginSuccess ? (tokenInput.trim() ? 'Replace Token' : 'Token Set ✓') : 'Use Token'}
+                  </Button>
+                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5, fontSize: '0.6rem' }}>
+                    Token stays in this browser tab and expires after about 1 hour. All actions run on your own project.
+                  </Typography>
+                </>
+              ) : (
+                <>
+                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1, fontSize: '0.65rem' }}>
+                    Opens Google sign-in in your browser
+                  </Typography>
+                  <Button
+                    fullWidth
+                    variant={loginSuccess ? "outlined" : "contained"}
+                    onClick={handleLogin}
+                    disabled={loginInProgress}
+                    size="small"
+                    startIcon={
+                      loginInProgress ? <CircularProgress size={14} /> :
+                      loginSuccess ? <CheckCircleIcon /> : <LockOpenIcon />
+                    }
+                    color={loginSuccess ? "success" : "primary"}
+                    sx={{ fontSize: '0.72rem', textTransform: 'none' }}
+                  >
+                    {loginInProgress ? 'Complete in browser...' :
+                     loginSuccess ? 'Authenticated ✓' : 'Authenticate with Google'}
+                  </Button>
+                </>
+              )}
               {loginError && (
                 <Alert severity="error" sx={{ mt: 1, py: 0.25, '& .MuiAlert-message': { fontSize: '0.7rem' } }}>
                   {loginError}
@@ -439,10 +595,10 @@ export default function App() {
 
             <Container maxWidth="xl" sx={{ py: 3 }}>
               <TabPanel value={tab} index={0}>
-                <AdvisoryPanel machineTypes={machineTypes} loading={loading} project={project} />
+                <AdvisoryPanel machineTypes={machineTypes} loading={loading} project={project} userToken={userToken} />
               </TabPanel>
               <TabPanel value={tab} index={1}>
-                <ScanningPanel machineTypes={machineTypes} loading={loading} project={project} />
+                <ScanningPanel machineTypes={machineTypes} loading={loading} project={project} userToken={userToken} />
               </TabPanel>
             </Container>
           </Box>

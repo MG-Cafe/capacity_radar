@@ -8,7 +8,7 @@ import json
 import logging
 from typing import Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -30,6 +30,44 @@ logger = logging.getLogger(__name__)
 # Cloud Run / Demo mode configuration
 DEMO_MODE = _os.environ.get("DEMO_MODE", "false").lower() in ("true", "1", "yes")
 DEFAULT_PROJECT = _os.environ.get("DEFAULT_PROJECT", "")
+
+# AUTH_MODE=user (hosted): every request must carry the visitor's own OAuth
+# access token; server-side ADC is disabled entirely so the service account
+# of the host project can never be used on behalf of visitors.
+USER_AUTH_MODE = _os.environ.get("AUTH_MODE", "local").lower() == "user"
+
+# OAuth Web client ID for browser-based sign-in (Google Identity Services).
+# When set, the frontend shows a "Sign in with Google" button instead of
+# asking the visitor to paste an access token.
+OAUTH_CLIENT_ID = _os.environ.get("OAUTH_CLIENT_ID", "")
+
+if OAUTH_CLIENT_ID:
+    TOKEN_INSTRUCTIONS = [
+        "Click 'Sign in with Google' in the left panel to connect.",
+    ]
+else:
+    TOKEN_INSTRUCTIONS = [
+        "Run in your terminal (Cloud Shell works too):",
+        "gcloud auth print-access-token",
+        "Paste the output into the Access Token field, then click Connect.",
+    ]
+
+
+def _bearer_token(request: Request) -> Optional[str]:
+    auth = request.headers.get("authorization", "")
+    if auth.lower().startswith("bearer "):
+        return auth[7:].strip() or None
+    return None
+
+
+def _require_user_token(user_token: Optional[str]):
+    if USER_AUTH_MODE and not user_token:
+        raise HTTPException(
+            status_code=401,
+            detail="This server requires your own Google Cloud credentials. "
+                   + ("Sign in with Google to continue." if OAUTH_CLIENT_ID
+                      else "Get a token with: gcloud auth print-access-token"),
+        )
 
 app = FastAPI(
     title="GPU Radar",
@@ -110,19 +148,22 @@ async def get_config():
     """Return app configuration including demo mode status."""
     return {
         "demoMode": DEMO_MODE,
+        "authMode": "user" if USER_AUTH_MODE else "local",
+        "oauthClientId": OAUTH_CLIENT_ID,
         "project": DEFAULT_PROJECT if DEMO_MODE else "",
         "repoUrl": "https://github.com/MG-Cafe/capacity_radar",
     }
 
 
 @app.post("/api/auth/check")
-async def check_auth(body: dict = None):
-    """Check gcloud authentication and project access."""
+async def check_auth(request: Request, body: dict = None):
+    """Check authentication (user-supplied token or local ADC) and project access."""
     import httpx
 
     if body is None:
         body = {}
     project = body.get("project", "")
+    user_token = body.get("token") or _bearer_token(request)
     result = {
         "authenticated": False,
         "projectValid": False,
@@ -132,37 +173,70 @@ async def check_auth(body: dict = None):
         "instructions": [],
     }
 
-    # Step 1: Check authentication using Application Default Credentials (ADC)
-    try:
-        import google.auth
-        import google.auth.transport.requests
-
-        creds, default_project = google.auth.default(
-            scopes=['https://www.googleapis.com/auth/cloud-platform']
+    if user_token:
+        # Validate the user-supplied OAuth access token via Google's tokeninfo endpoint
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.get(
+                    "https://www.googleapis.com/oauth2/v3/tokeninfo",
+                    params={"access_token": user_token},
+                )
+            if resp.status_code == 200:
+                info = resp.json()
+                scopes = info.get("scope", "")
+                if "cloud-platform" not in scopes:
+                    result["errors"].append("Token is valid but missing the cloud-platform scope.")
+                    result["instructions"].extend(TOKEN_INSTRUCTIONS)
+                    return result
+                result["authenticated"] = True
+                result["account"] = info.get("email") or "Google Cloud user"
+                token = user_token
+            else:
+                result["errors"].append("Access token is invalid or expired (tokens last about 1 hour).")
+                result["instructions"].extend(TOKEN_INSTRUCTIONS)
+                return result
+        except Exception as e:
+            result["errors"].append(f"Failed to validate token: {str(e)}")
+            return result
+    elif USER_AUTH_MODE:
+        result["errors"].append(
+            "This hosted app uses YOUR Google Cloud credentials. "
+            + ("Sign in with Google to connect." if OAUTH_CLIENT_ID else "Paste an access token to connect.")
         )
-        creds.refresh(google.auth.transport.requests.Request())
-        token = creds.token
-        result["authenticated"] = True
-
-        # Get account info
-        account = getattr(creds, 'service_account_email', None)
-        if not account:
-            # For user credentials, get account from gcloud
-            proc = await asyncio.create_subprocess_exec(
-                "gcloud", "config", "get-value", "account",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, _ = await proc.communicate()
-            account = stdout.decode().strip() if proc.returncode == 0 else "Unknown"
-        result["account"] = account
-
-    except Exception as e:
-        error = str(e)
-        result["errors"].append(f"Not authenticated: {error}")
-        result["instructions"].append("Click 'Authenticate with Google' above, or run in terminal:")
-        result["instructions"].append("gcloud auth application-default login")
+        result["instructions"].extend(TOKEN_INSTRUCTIONS)
         return result
+    else:
+        # Local mode: check authentication using Application Default Credentials (ADC)
+        try:
+            import google.auth
+            import google.auth.transport.requests
+
+            creds, default_project = google.auth.default(
+                scopes=['https://www.googleapis.com/auth/cloud-platform']
+            )
+            creds.refresh(google.auth.transport.requests.Request())
+            token = creds.token
+            result["authenticated"] = True
+
+            # Get account info
+            account = getattr(creds, 'service_account_email', None)
+            if not account:
+                # For user credentials, get account from gcloud
+                proc = await asyncio.create_subprocess_exec(
+                    "gcloud", "config", "get-value", "account",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, _ = await proc.communicate()
+                account = stdout.decode().strip() if proc.returncode == 0 else "Unknown"
+            result["account"] = account
+
+        except Exception as e:
+            error = str(e)
+            result["errors"].append(f"Not authenticated: {error}")
+            result["instructions"].append("Click 'Authenticate with Google' above, or run in terminal:")
+            result["instructions"].append("gcloud auth application-default login")
+            return result
 
     if not project:
         return result
@@ -204,6 +278,12 @@ async def check_auth(body: dict = None):
 @app.post("/api/auth/login")
 async def trigger_login():
     """Trigger gcloud auth application-default login - opens browser for authentication."""
+    if USER_AUTH_MODE:
+        return {
+            "success": False,
+            "message": "This hosted app uses your own credentials. "
+                       "Run 'gcloud auth print-access-token' and paste the token instead.",
+        }
     try:
         # Use application-default login which sets up ADC with proper OAuth client
         proc = await asyncio.create_subprocess_exec(
@@ -244,10 +324,13 @@ async def list_zones_for_machine_type(machine_type: str):
 
 
 @app.post("/api/advisory/calendar")
-async def calendar_advisory(req: CalendarAdvisoryRequest):
+async def calendar_advisory(req: CalendarAdvisoryRequest, request: Request):
     """Query DWS Calendar Mode Advisory API."""
+    user_token = _bearer_token(request)
+    _require_user_token(user_token)
     try:
         result = await get_calendar_advisory(
+            user_token=user_token,
             project=req.project,
             machine_type=req.machineType,
             vm_count=req.vmCount,
@@ -264,10 +347,13 @@ async def calendar_advisory(req: CalendarAdvisoryRequest):
 
 
 @app.post("/api/advisory/calendar/splits")
-async def calendar_splits(req: CalendarAdvisoryRequest):
+async def calendar_splits(req: CalendarAdvisoryRequest, request: Request):
     """Query Calendar Advisory with split analysis for capacity planning."""
+    user_token = _bearer_token(request)
+    _require_user_token(user_token)
     try:
         result = await find_best_splits(
+            user_token=user_token,
             project=req.project,
             machine_type=req.machineType,
             vm_count=req.vmCount,
@@ -284,10 +370,13 @@ async def calendar_splits(req: CalendarAdvisoryRequest):
 
 
 @app.post("/api/advisory/spot")
-async def spot_advisory(req: SpotAdvisoryRequest):
+async def spot_advisory(req: SpotAdvisoryRequest, request: Request):
     """Query Spot VM Advisory API."""
+    user_token = _bearer_token(request)
+    _require_user_token(user_token)
     try:
         result = await get_spot_advisory(
+            user_token=user_token,
             project=req.project,
             machine_type=req.machineType,
             regions=req.regions if req.regions else None,
@@ -300,10 +389,13 @@ async def spot_advisory(req: SpotAdvisoryRequest):
 
 
 @app.post("/api/advisory/flex")
-async def flex_advisory(req: FlexAdvisoryRequest):
+async def flex_advisory(req: FlexAdvisoryRequest, request: Request):
     """Query DWS Flex Start Capacity Advisory API (Preview / whitelisted projects)."""
+    user_token = _bearer_token(request)
+    _require_user_token(user_token)
     try:
         result = await get_flex_advisory(
+            user_token=user_token,
             project=req.project,
             machine_type=req.machineType,
             size=req.size,
@@ -378,6 +470,16 @@ async def websocket_scan(websocket: WebSocket):
                     })
 
             elif action == "scan":
+                # Bring-your-own-credentials: the scan runs with the visitor's token
+                user_token = message.get("userToken") or None
+                if USER_AUTH_MODE and not user_token:
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": "This server requires your own Google Cloud access token. "
+                                   "Reconnect in the Authentication panel (gcloud auth print-access-token).",
+                    })
+                    continue
+
                 # Validate request
                 try:
                     scan_req = ScanRequest(**message.get("config", {}))
@@ -428,6 +530,7 @@ async def websocket_scan(websocket: WebSocket):
                     priorities=priorities,
                     send_update=send_update,
                     dws_calendar_duration_hours=scan_req.dwsCalendarDurationHours,
+                    user_token=user_token,
                 )
 
                 sessions.append(session)

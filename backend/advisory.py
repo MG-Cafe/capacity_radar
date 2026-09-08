@@ -14,6 +14,13 @@ logger = logging.getLogger(__name__)
 
 def _get_adc_token() -> str:
     """Get access token using Application Default Credentials."""
+    import os
+    if os.environ.get("AUTH_MODE", "local").lower() == "user":
+        raise RuntimeError(
+            "This server runs in bring-your-own-credentials mode and never uses "
+            "server-side credentials. Provide your own access token "
+            "(gcloud auth print-access-token) in the Authentication panel."
+        )
     import google.auth
     import google.auth.transport.requests
 
@@ -130,6 +137,7 @@ async def get_calendar_advisory(
     duration_days: int = 7,
     regions: list[str] | None = None,
     zones: list[str] | None = None,
+    user_token: str | None = None,
 ) -> dict:
     """
     Query DWS Calendar Mode Advisory API.
@@ -154,7 +162,7 @@ async def get_calendar_advisory(
             results["errors"].append("No regions or zones specified for calendar advisory.")
             return results
 
-    token = await get_gcloud_access_token()
+    token = user_token or await get_gcloud_access_token()
 
     tasks = []
     for region in sorted(target_regions):
@@ -186,6 +194,7 @@ async def find_best_splits(
     duration_days: int = 7,
     regions: list[str] | None = None,
     zones: list[str] | None = None,
+    user_token: str | None = None,
 ) -> dict:
     """
     Query Calendar Advisory at multiple VM counts to find capacity splits.
@@ -210,7 +219,7 @@ async def find_best_splits(
             results["errors"].append("No regions or zones specified.")
             return results
 
-    token = await get_gcloud_access_token()
+    token = user_token or await get_gcloud_access_token()
 
     # Build VM count levels to query: 100%, 75%, 50%, 25%, and 1
     levels = []
@@ -480,6 +489,7 @@ async def get_spot_advisory(
     machine_type: str,
     regions: list[str] | None = None,
     zones: list[str] | None = None,
+    user_token: str | None = None,
 ) -> dict:
     """
     Query Spot VM Advisory API (Preview).
@@ -536,7 +546,7 @@ async def get_spot_advisory(
         results["errors"].append("No regions or zones specified for spot advisory.")
         return results
 
-    token = await get_gcloud_access_token()
+    token = user_token or await get_gcloud_access_token()
 
     tasks = []
     for region in sorted(target_regions):
@@ -759,6 +769,7 @@ async def get_flex_advisory(
     max_run_duration_hours: int = 24,
     regions: list[str] | None = None,
     zones: list[str] | None = None,
+    user_token: str | None = None,
 ) -> dict:
     """
     Query the DWS Flex Start Capacity Advisory API (Preview / whitelisted).
@@ -799,7 +810,7 @@ async def get_flex_advisory(
         results["errors"].append("No regions or zones specified for flex advisory.")
         return results
 
-    token = await get_gcloud_access_token()
+    token = user_token or await get_gcloud_access_token()
 
     max_run_secs = max(1, int(max_run_duration_hours)) * 3600
 
