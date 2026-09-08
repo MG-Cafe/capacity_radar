@@ -340,44 +340,58 @@ full agent workflow, command reference, and safety rules.
 
 ### Docker
 
-```dockerfile
-FROM python:3.11-slim
-
-RUN apt-get update && apt-get install -y curl && \
-    curl -fsSL https://deb.nodesource.com/setup_18.x | bash - && \
-    apt-get install -y nodejs && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /app
-COPY . .
-
-RUN pip install --no-cache-dir -r backend/requirements.txt
-RUN cd frontend && npm install && npm run build
-
-EXPOSE 8000
-CMD ["python", "backend/main.py"]
-```
+The repo ships a multi-stage `Dockerfile` (Node 20 builds the frontend, Python 3.12 serves it) listening on port 8080:
 
 ```bash
 docker build -t capacity-radar .
-docker run -p 8000:8000 \
+docker run -p 8080:8080 \
+  -e DEMO_MODE=false \
   -v ~/.config/gcloud:/root/.config/gcloud \
   capacity-radar
 ```
 
 > Mount your `gcloud` config directory to pass ADC credentials to the container.
 
-### Cloud Run
+### Cloud Run — public hosted app (bring-your-own-credentials)
+
+This reproduces the hosted web app exactly. The service runs as a **zero-permission** service account and never uses server-side credentials (`AUTH_MODE=user`): visitors paste their own access token (`gcloud auth print-access-token`, Cloud Shell works too) into the Authentication panel, so every scan and deploy runs under the visitor's own identity, project, and quota. That's what makes the URL safe to share publicly.
+
+```bash
+# One-time: create a service account and grant it NO roles
+gcloud iam service-accounts create capacity-radar-web
+
+gcloud run deploy capacity-radar \
+  --source . \
+  --region us-central1 \
+  --allow-unauthenticated \
+  --service-account capacity-radar-web@YOUR_PROJECT.iam.gserviceaccount.com \
+  --set-env-vars DEMO_MODE=false,AUTH_MODE=user \
+  --memory 512Mi --cpu 1 --max-instances 2
+```
+
+### Cloud Run — private deployment (server credentials)
+
+If the app is only for you or your team, you can instead give the service account real permissions (`roles/compute.admin`, plus `roles/tpu.admin` for TPUs) and skip the token-pasting flow:
 
 ```bash
 gcloud run deploy capacity-radar \
   --source . \
-  --port 8000 \
   --region us-central1 \
-  --allow-unauthenticated \
-  --service-account SA_NAME@PROJECT.iam.gserviceaccount.com
+  --no-allow-unauthenticated \
+  --service-account SA_NAME@PROJECT.iam.gserviceaccount.com \
+  --set-env-vars DEMO_MODE=false
 ```
 
-The Cloud Run service account needs `Compute Admin` and `TPU Admin` roles.
+> Never combine server credentials with `--allow-unauthenticated`: anyone on the internet could then create billable resources in your project.
+
+### Environment variables
+
+| Variable | Dockerfile default | Hosted app | Purpose |
+|----------|-------------------|------------|---------|
+| `DEMO_MODE` | `true` | `false` | When `true`, real deployments are disabled (safe demo). Set `false` for a working app. |
+| `AUTH_MODE` | `local` | `user` | `user` = backend never uses its own credentials; every request must carry a visitor-supplied token. |
+| `DEFAULT_PROJECT` | empty | empty | Optional project ID to pre-fill in the UI. |
+| `OAUTH_CLIENT_ID` | unset | unset | Optional: enables a "Sign in with Google" button instead of token pasting (requires your own verified OAuth client). |
 
 ---
 
