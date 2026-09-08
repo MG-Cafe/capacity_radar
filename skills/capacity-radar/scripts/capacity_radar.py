@@ -184,6 +184,25 @@ def cmd_catalog_zones(args):
     _out({"ok": True, "machineType": args.machine_type, "zones": zones, "regions": regions})
 
 
+def cmd_catalog_networks(args):
+    """List VPC networks (+ regional subnetworks) available in the project so the
+    user can pick one for deploy (--network / --subnetwork). Prefers 'default'."""
+    import hunter
+
+    async def run():
+        token = await hunter.get_access_token()
+        return await hunter.list_networks(
+            project=args.project, token=token, region=args.region or "")
+
+    try:
+        result = asyncio.run(run())
+        result["ok"] = True
+        _out(result)
+    except Exception as e:
+        _err(str(e))
+
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # advise
 # ─────────────────────────────────────────────────────────────────────────────
@@ -285,6 +304,12 @@ def cmd_deploy(args):
         p["flex_usage_duration_hours"] = args.flex_usage_hours
         priorities.append(p)
 
+    # Network / subnetwork selection (optional). Empty => auto-select:
+    # prefer a "default" VPC, else the first VPC with a subnet in the region.
+    network = args.network or None
+    subnetwork = args.subnetwork or None
+
+
     if not priorities:
         _err("At least one --priority is required (e.g. --priority spot:us-central1-b).")
 
@@ -320,7 +345,10 @@ def cmd_deploy(args):
             priorities=priorities,
             send_update=send_update,
             dws_calendar_duration_hours=args.calendar_duration_hours,
+            network=network,
+            subnetwork=subnetwork,
         )
+
         await session.run(parallel=args.parallel)
         return session
 
@@ -366,6 +394,11 @@ def build_parser():
     c_zones = cat_sub.add_parser("zones", help="Supported zones for a machine type")
     c_zones.add_argument("--machine-type", required=True)
     c_zones.set_defaults(func=cmd_catalog_zones)
+    c_nets = cat_sub.add_parser("networks", help="List VPC networks/subnetworks for a project")
+    c_nets.add_argument("--project", required=True)
+    c_nets.add_argument("--region", default="", help="Optional region to also list its subnetworks")
+    c_nets.set_defaults(func=cmd_catalog_networks)
+
 
     # advise
     adv = sub.add_parser("advise", help="Run a capacity advisory")
@@ -418,9 +451,16 @@ def build_parser():
     dep.add_argument("--calendar-start", default="", help="ISO datetime for DWS Calendar")
     dep.add_argument("--calendar-end", default="", help="ISO datetime for DWS Calendar")
     dep.add_argument("--calendar-duration-hours", type=int, default=24)
+    dep.add_argument("--network", default="",
+                     help="VPC network name to use (empty = auto: prefer 'default', "
+                          "else first VPC with a subnet in the region). "
+                          "List options with: catalog networks --project <ID> --region <R>")
+    dep.add_argument("--subnetwork", default="",
+                     help="Regional subnetwork name (optional; auto-resolved from --network)")
     dep.add_argument("--yes", action="store_true",
                      help="Confirm real resource creation (required to actually deploy)")
     dep.set_defaults(func=cmd_deploy)
+
 
     return p
 

@@ -92,6 +92,8 @@ class ScanningSession:
         send_update: Callable,
         dws_calendar_duration_hours: int = 24,
         user_token: Optional[str] = None,
+        network: Optional[str] = None,
+        subnetwork: Optional[str] = None,
     ):
         self.session_id = session_id
         self.project = project
@@ -106,7 +108,13 @@ class ScanningSession:
         self._token = None
         self._token_time = None
         self._user_token = user_token
+        # Optional user-selected VPC network / subnetwork (names, not full URLs).
+        # When empty, resolvers fall back to a VPC named "default", else the
+        # first available network/subnetwork in the target region.
+        self.network = network or ""
+        self.subnetwork = subnetwork or ""
         self._deploy_start_time = datetime.now(timezone.utc)
+
 
     def _tracking_labels(self, method: str) -> dict:
         """Generate GCP resource labels for tracking deployments created by Capacity Radar.
@@ -882,25 +890,164 @@ class ScanningSession:
             await self.emit("warning", f"⚠️ Timeout creating DWS Flex future reservation in {zone}")
             return False
 
-    async def _get_network(self, token: str) -> str:
-        """Get the first available VPC network for this project."""
-        if hasattr(self, '_cached_network'):
-            return self._cached_network
+    async def _resolve_network_selection(self, token: str, region: str) -> dict:
+        """Resolve which VPC network + regional subnetwork to use.
+
+        Selection order (applies to BOTH GPU and TPU):
+          1. Explicit user-selected self.network / self.subnetwork (from UI/CLI).
+          2. A VPC literally named "default" (+ a subnetwork in `region`).
+          3. The first available network that has a subnetwork in `region`.
+
+        Returns {"network_name", "subnetwork_name" (may be None), "region"}.
+        Results are cached per-region.
+        """
+        cache_key = f"_cached_netsel_{region}"
+        if hasattr(self, cache_key):
+            return getattr(self, cache_key)
+
+        # 1) Explicit user selection wins.
+        if self.network:
+            sel = {
+                "network_name": self.network,
+                "subnetwork_name": self.subnetwork or None,
+                "region": region,
+            }
+            # If a network was chosen but no subnetwork, try to find one in-region.
+            if not sel["subnetwork_name"]:
+                try:
+                    async with httpx.AsyncClient(timeout=15) as client:
+                        sub_resp = await client.get(
+                            f"https://compute.googleapis.com/compute/v1/projects/{self.project}"
+                            f"/regions/{region}/subnetworks",
+                            headers={"Authorization": f"Bearer {token}"},
+                        )
+                        if sub_resp.status_code == 200:
+                            for s in sub_resp.json().get("items", []):
+                                if s.get("network", "").rsplit("/", 1)[-1] == self.network:
+                                    sel["subnetwork_name"] = s["name"]
+                                    break
+                except Exception:
+                    pass
+            setattr(self, cache_key, sel)
+            return sel
+
+        # 2 & 3) Auto-discover. Build a map of {network_name: subnet_name_in_region}.
+        region_subnets = {}  # network_name -> subnetwork_name
+        all_networks = []
         try:
             async with httpx.AsyncClient(timeout=15) as client:
-                resp = await client.get(
-                    f"https://compute.googleapis.com/compute/v1/projects/{self.project}/global/networks",
+                sub_resp = await client.get(
+                    f"https://compute.googleapis.com/compute/v1/projects/{self.project}"
+                    f"/regions/{region}/subnetworks",
                     headers={"Authorization": f"Bearer {token}"},
                 )
-                if resp.status_code == 200:
-                    networks = resp.json().get("items", [])
-                    if networks:
-                        self._cached_network = networks[0]["selfLink"]
-                        return self._cached_network
+                if sub_resp.status_code == 200:
+                    for s in sub_resp.json().get("items", []):
+                        net = s.get("network", "").rsplit("/", 1)[-1]
+                        if net and net not in region_subnets:
+                            region_subnets[net] = s["name"]
+
+                net_resp = await client.get(
+                    f"https://compute.googleapis.com/compute/v1/projects/{self.project}"
+                    f"/global/networks",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                if net_resp.status_code == 200:
+                    all_networks = [n["name"] for n in net_resp.json().get("items", [])]
         except Exception:
             pass
-        self._cached_network = f"projects/{self.project}/global/networks/default"
+
+        chosen_net = None
+        chosen_sub = None
+        # Prefer a network literally named "default".
+        if "default" in all_networks:
+            chosen_net = "default"
+            chosen_sub = region_subnets.get("default")
+        # Else prefer a network that actually has a subnet in this region.
+        if not chosen_net:
+            for net in all_networks:
+                if net in region_subnets:
+                    chosen_net, chosen_sub = net, region_subnets[net]
+                    break
+        # Else any network at all.
+        if not chosen_net and all_networks:
+            chosen_net = all_networks[0]
+        # Absolute fallback.
+        if not chosen_net:
+            chosen_net = "default"
+
+        sel = {"network_name": chosen_net, "subnetwork_name": chosen_sub, "region": region}
+        setattr(self, cache_key, sel)
+        return sel
+
+    async def _get_network(self, token: str, zone: str = "") -> str:
+        """Return the GPU VM networkInterfaces[].network selfLink-style path.
+
+        Honors explicit user selection, else prefers a 'default' VPC, else the
+        first network with a subnet in the zone's region.
+        """
+        if hasattr(self, '_cached_network'):
+            return self._cached_network
+        region = zone.rsplit("-", 1)[0] if zone else ""
+        network_name = self.network
+        if not network_name and region:
+            sel = await self._resolve_network_selection(token, region)
+            network_name = sel["network_name"]
+        if not network_name:
+            # No zone context — fall back to first network or 'default'.
+            try:
+                async with httpx.AsyncClient(timeout=15) as client:
+                    resp = await client.get(
+                        f"https://compute.googleapis.com/compute/v1/projects/{self.project}/global/networks",
+                        headers={"Authorization": f"Bearer {token}"},
+                    )
+                    if resp.status_code == 200:
+                        items = resp.json().get("items", [])
+                        names = [n["name"] for n in items]
+                        network_name = "default" if "default" in names else (names[0] if names else "default")
+            except Exception:
+                network_name = "default"
+        self._cached_network = f"projects/{self.project}/global/networks/{network_name}"
         return self._cached_network
+
+    async def _get_gpu_subnetwork(self, token: str, zone: str) -> Optional[str]:
+        """Return the regional subnetwork path for GPU VMs, if resolvable."""
+        region = zone.rsplit("-", 1)[0]
+        sel = await self._resolve_network_selection(token, region)
+        if sel.get("subnetwork_name"):
+            return (f"projects/{self.project}/regions/{region}/subnetworks/"
+                    f"{sel['subnetwork_name']}")
+        return None
+
+    async def _get_tpu_network_config(self, token: str, zone: str) -> dict:
+        """Resolve a valid networkConfig for a TPU node in the given zone.
+
+        Cloud TPU defaults to a VPC literally named "default" when no
+        networkConfig is supplied. Projects without a "default" VPC then fail
+        with: The value "default" provided for field "Network"/"Subnetwork"
+        does not exist. To avoid that, resolve the network/subnetwork explicitly
+        (honoring any user selection, else a 'default' VPC, else the first VPC
+        with a subnetwork in the target region).
+        """
+        region = zone.rsplit("-", 1)[0]
+        cache_key = f"_cached_tpu_netcfg_{region}"
+        if hasattr(self, cache_key):
+            return getattr(self, cache_key)
+
+        sel = await self._resolve_network_selection(token, region)
+        cfg = {
+            "network": f"projects/{self.project}/global/networks/{sel['network_name']}",
+            "enableExternalIps": True,
+        }
+        if sel.get("subnetwork_name"):
+            cfg["subnetwork"] = (
+                f"projects/{self.project}/regions/{region}/subnetworks/"
+                f"{sel['subnetwork_name']}"
+            )
+
+        setattr(self, cache_key, cfg)
+        return cfg
+
 
     def _is_accelerator_optimized(self) -> bool:
         """Check if machine type is an accelerator-optimized family (A3/A4/A4X).
@@ -913,8 +1060,10 @@ class ScanningSession:
         for accelerator-optimized families, or 1 instance for standard GPU types."""
         token = await self._get_token()
         machine_info = MACHINE_TYPES.get(self.machine_type, {})
-        network = await self._get_network(token)
+        network = await self._get_network(token, zone)
+        subnetwork = await self._get_gpu_subnetwork(token, zone)
         is_accel_opt = self._is_accelerator_optimized()
+
 
         # Accelerator-optimized families (A3/A4) have specific requirements
         spot_count = self.vm_count if is_accel_opt else 1
@@ -953,11 +1102,13 @@ class ScanningSession:
                                }}],
                     "networkInterfaces": [{
                         "network": network,
+                        **({"subnetwork": subnetwork} if subnetwork else {}),
                         "nicType": "GVNIC",
                         "accessConfigs": [{"type": "ONE_TO_ONE_NAT", "name": "External NAT"}],
                     }],
                 }
             else:
+
                 # Standard GPU families (G2, A2): need guestAccelerators
                 body = {
                     "name": inst_name,
@@ -974,10 +1125,12 @@ class ScanningSession:
                                }}],
                     "networkInterfaces": [{
                         "network": network,
+                        **({"subnetwork": subnetwork} if subnetwork else {}),
                         "accessConfigs": [{"type": "ONE_TO_ONE_NAT", "name": "External NAT"}],
                     }],
                 }
                 if machine_info.get("accelerator_type"):
+
                     body["guestAccelerators"] = [{
                         "acceleratorType": f"zones/{zone}/acceleratorTypes/{machine_info['accelerator_type']}",
                         "acceleratorCount": machine_info["gpu_count"],
@@ -1166,8 +1319,10 @@ class ScanningSession:
         qr_name = self._make_name(name_prefix, "tpu-qr", zone)
         token = await self._get_token()
         accel_type = self._get_tpu_accelerator_type(zone)
+        net_cfg = await self._get_tpu_network_config(token, zone)
 
         wait_secs = flex_max_wait_hours * 3600
+
         await self.emit("action",
             f"📡 [TPU] Creating Queued Resource '{qr_name}' ({accel_type}) in {zone} "
             f"(DWS Flex, max wait: {flex_max_wait_hours}h, usage: {flex_usage_duration_hours}h)...")
@@ -1182,6 +1337,7 @@ class ScanningSession:
                         "acceleratorType": accel_type,
                         "runtimeVersion": "tpu-vm-tf-2.17.0-pjrt",
                         "labels": self._tracking_labels("dws-flex"),
+                        "networkConfig": net_cfg,
                     },
                     "nodeId": f"{qr_name}-node",
                 }]
@@ -1228,6 +1384,7 @@ class ScanningSession:
         qr_name = self._make_name(name_prefix, "tpu-cal", zone)
         token = await self._get_token()
         accel_type = self._get_tpu_accelerator_type(zone)
+        net_cfg = await self._get_tpu_network_config(token, zone)
 
         if calendar_start_time:
             start_str = _normalize_datetime(calendar_start_time)
@@ -1255,6 +1412,7 @@ class ScanningSession:
                         "acceleratorType": accel_type,
                         "runtimeVersion": "tpu-vm-tf-2.17.0-pjrt",
                         "labels": self._tracking_labels("dws-calendar"),
+                        "networkConfig": net_cfg,
                     },
                     "nodeId": f"{qr_name}-node",
                 }]
@@ -1306,6 +1464,7 @@ class ScanningSession:
         qr_name = self._make_name(name_prefix, "tpu-spot", zone)
         token = await self._get_token()
         accel_type = self._get_tpu_accelerator_type(zone)
+        net_cfg = await self._get_tpu_network_config(token, zone)
 
         await self.emit("action",
             f"📡 [TPU] Creating Spot TPU '{qr_name}' ({accel_type}) in {zone}...")
@@ -1320,6 +1479,7 @@ class ScanningSession:
                         "acceleratorType": accel_type,
                         "runtimeVersion": "tpu-vm-tf-2.17.0-pjrt",
                         "labels": self._tracking_labels("spot"),
+                        "networkConfig": net_cfg,
                     },
                     "nodeId": f"{qr_name}-node",
                 }]
@@ -1401,16 +1561,83 @@ def _schedule_session_cleanup(session_id: str, delay: int = 300):
 
 
 def create_session(project, machine_type, vm_count, priorities, send_update,
-                   dws_calendar_duration_hours=24, user_token=None) -> ScanningSession:
+                   dws_calendar_duration_hours=24, user_token=None,
+                   network=None, subnetwork=None) -> ScanningSession:
     session_id = str(uuid.uuid4())
     session = ScanningSession(
         session_id=session_id, project=project, machine_type=machine_type,
         vm_count=vm_count, priorities=priorities, send_update=send_update,
         dws_calendar_duration_hours=dws_calendar_duration_hours,
-        user_token=user_token,
+        user_token=user_token, network=network, subnetwork=subnetwork,
     )
     active_sessions[session_id] = session
     return session
+
+
+async def list_networks(project: str, token: str, region: str = "") -> dict:
+    """List VPC networks (and regional subnetworks) available to the project.
+
+    Returns {"hasDefault": bool, "networks": [{"name", "subnetworks": [names]}]}.
+    Used by the UI/agent to let a user pick a network/subnetwork instead of
+    silently defaulting to a possibly-nonexistent "default" VPC.
+    """
+    result = {"hasDefault": False, "networks": []}
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            net_resp = await client.get(
+                f"https://compute.googleapis.com/compute/v1/projects/{project}/global/networks",
+                headers=headers,
+            )
+            networks = net_resp.json().get("items", []) if net_resp.status_code == 200 else []
+
+            # Optionally map region subnetworks per network.
+            region_subnets = {}
+            if region:
+                sub_resp = await client.get(
+                    f"https://compute.googleapis.com/compute/v1/projects/{project}"
+                    f"/regions/{region}/subnetworks",
+                    headers=headers,
+                )
+                if sub_resp.status_code == 200:
+                    for s in sub_resp.json().get("items", []):
+                        net = s.get("network", "").rsplit("/", 1)[-1]
+                        region_subnets.setdefault(net, []).append(s["name"])
+
+            for n in networks:
+                name = n["name"]
+                if name == "default":
+                    result["hasDefault"] = True
+                result["networks"].append({
+                    "name": name,
+                    "subnetworks": sorted(region_subnets.get(name, [])),
+                })
+    except Exception as e:
+        result["error"] = str(e)
+    return result
+
+
+async def create_network(project: str, token: str, name: str) -> dict:
+    """Create a new auto-mode VPC network (auto-creates regional subnets).
+
+    Returns {"ok": bool, "operation"|"error": ...}. Auto-mode means GCP will
+    create a /20 subnetwork in every region automatically, which is the
+    simplest valid network for launching GPUs/TPUs.
+    """
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    url = f"https://compute.googleapis.com/compute/v1/projects/{project}/global/networks"
+    body = {"name": name, "autoCreateSubnetworks": True}
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(url, json=body, headers=headers)
+            data = resp.json()
+            if resp.status_code in (200, 201):
+                return {"ok": True, "operation": data.get("name", ""), "network": name}
+            msg = data.get("error", {}).get("message", f"HTTP {resp.status_code}")
+            return {"ok": False, "error": msg}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
 
 
 def cancel_session(session_id: str) -> bool:

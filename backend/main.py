@@ -19,7 +19,9 @@ from advisory import get_calendar_advisory, get_spot_advisory, find_best_splits,
 from hunter import (
     create_session, cancel_session, get_session,
     active_sessions, ConsumptionModel, ScanningStatus,
+    list_networks, create_network,
 )
+
 
 import os as _os
 
@@ -139,6 +141,14 @@ class ScanRequest(BaseModel):
     totalHuntingHours: float = Field(default=1, ge=0.1)
     priorities: list[PriorityConfig]
     dwsCalendarDurationHours: int = Field(default=24, ge=1, le=2160)  # Max 90 days
+    network: str = Field(default="")      # VPC network name (empty = auto-select)
+    subnetwork: str = Field(default="")   # Regional subnetwork name (optional)
+
+
+class CreateNetworkRequest(BaseModel):
+    project: str
+    name: str = Field(min_length=1, max_length=63)
+
 
 
 # --- REST Endpoints ---
@@ -323,8 +333,55 @@ async def list_zones_for_machine_type(machine_type: str):
     return {"machineType": machine_type, "zones": zones, "regions": regions}
 
 
+@app.get("/api/networks")
+async def get_networks(request: Request, project: str, region: str = ""):
+    """List VPC networks (and regional subnetworks) available in the project.
+
+    The UI/agent uses this to let the user pick a network/subnetwork instead of
+    silently defaulting to a possibly-nonexistent "default" VPC.
+    """
+    user_token = _bearer_token(request)
+    _require_user_token(user_token)
+    if not user_token:
+        # Local ADC mode: resolve a token server-side.
+        try:
+            import google.auth
+            import google.auth.transport.requests
+            creds, _ = google.auth.default(scopes=['https://www.googleapis.com/auth/cloud-platform'])
+            creds.refresh(google.auth.transport.requests.Request())
+            user_token = creds.token
+        except Exception as e:
+            raise HTTPException(status_code=401, detail=f"Not authenticated: {e}")
+    try:
+        return await list_networks(project=project, token=user_token, region=region)
+    except Exception as e:
+        logger.error(f"List networks error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/networks/create")
+async def create_network_endpoint(req: CreateNetworkRequest, request: Request):
+    """Create a new auto-mode VPC network (auto-creates regional subnets)."""
+    user_token = _bearer_token(request)
+    _require_user_token(user_token)
+    if not user_token:
+        try:
+            import google.auth
+            import google.auth.transport.requests
+            creds, _ = google.auth.default(scopes=['https://www.googleapis.com/auth/cloud-platform'])
+            creds.refresh(google.auth.transport.requests.Request())
+            user_token = creds.token
+        except Exception as e:
+            raise HTTPException(status_code=401, detail=f"Not authenticated: {e}")
+    result = await create_network(project=req.project, token=user_token, name=req.name)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error", "Failed to create network"))
+    return result
+
+
 @app.post("/api/advisory/calendar")
 async def calendar_advisory(req: CalendarAdvisoryRequest, request: Request):
+
     """Query DWS Calendar Mode Advisory API."""
     user_token = _bearer_token(request)
     _require_user_token(user_token)
@@ -531,7 +588,10 @@ async def websocket_scan(websocket: WebSocket):
                     send_update=send_update,
                     dws_calendar_duration_hours=scan_req.dwsCalendarDurationHours,
                     user_token=user_token,
+                    network=scan_req.network or None,
+                    subnetwork=scan_req.subnetwork or None,
                 )
+
 
                 sessions.append(session)
 
