@@ -1263,7 +1263,11 @@ class ScanningSession:
                 "validUntilTime": end_str,
             },
             "guaranteed": {
-                "reserved": True,
+                # The TPU v2 QueuedResource `Guaranteed` schema only supports
+                # `minDuration` (a google-duration string). There is no
+                # `reserved` field — sending it causes:
+                #   Unknown name "reserved" at 'queued_resource.guaranteed'
+                "minDuration": f"{self.dws_calendar_duration_hours * 3600}s",
             },
         }
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
@@ -1357,6 +1361,7 @@ class ScanningSession:
         message = error.get("message", "")
         code = error.get("code", 0)
         errors = error.get("errors", [])
+
         if not message and errors:
             message = errors[0].get("message", "Unknown error")
         ml = message.lower()
