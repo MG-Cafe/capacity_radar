@@ -42,9 +42,9 @@ import { ToggleButton, ToggleButtonGroup, FormControlLabel, Switch } from '@mui/
 
 
 const METHOD_OPTIONS = [
-  { value: 'on_demand', label: 'On-Demand Reservation', icon: <StorageIcon sx={{ fontSize: 18 }} />, color: '#1a73e8', desc: 'Reserve capacity at on-demand rates. Pay per second.' },
-  { value: 'dws_calendar', label: 'DWS Calendar Mode', icon: <CalendarMonthIcon sx={{ fontSize: 18 }} />, color: '#34a853', desc: 'Book capacity for a specific time window (1–90 days).' },
-  { value: 'dws_flex', label: 'DWS Flex Start', icon: <CloudQueueIcon sx={{ fontSize: 18 }} />, color: '#9334e6', desc: 'Queue for capacity. Starts when available (usage max 14 days).' },
+  { value: 'on_demand', label: 'On-Demand Reservation', icon: <StorageIcon sx={{ fontSize: 18 }} />, color: '#1a73e8', desc: 'Reserve GPU capacity (specific reservation) or create On-Demand TPU nodes.' },
+  { value: 'dws_calendar', label: 'DWS Calendar Mode', icon: <CalendarMonthIcon sx={{ fontSize: 18 }} />, color: '#34a853', desc: 'Submit a Future Reservation (Calendar Mode) for a 1–90 day window.' },
+  { value: 'dws_flex', label: 'DWS Flex Start', icon: <CloudQueueIcon sx={{ fontSize: 18 }} />, color: '#9334e6', desc: 'Queue for DWS Flex Start capacity. Starts when available (max 7 days runtime).' },
   { value: 'spot', label: 'Spot VMs', icon: <BoltIcon sx={{ fontSize: 18 }} />, color: '#f9ab00', desc: 'Spare capacity at discount. Can be preempted anytime.' },
 ]
 
@@ -271,17 +271,22 @@ export default function ScanningPanel({ machineTypes = [], loading: mtLoading, p
         minVmCount,
         maxVmCount,
         totalHuntingHours,
-        priorities: priorities.map(p => ({
-          method: p.method,
-          zones: p.zones.length > 0 ? p.zones : availableZones,
-          max_retries: p.max_retries,
-          retry_interval: p.retry_interval,
-          name_prefix: p.namePrefix || '',
-          flex_max_wait_hours: p.flexMaxWaitHours || 168,
-          flex_usage_duration_hours: p.flexUsageDurationHours || 24,
-          calendar_start_time: p.calendarStartTime || '',
-          calendar_end_time: p.calendarEndTime || '',
-        })),
+        priorities: priorities.map(p => {
+          const defaultZonesForMethod = (
+            p.method === 'dws_calendar' && !showUnsupported && selectedMachineInfo?.calendarZones?.length > 0
+          ) ? selectedMachineInfo.calendarZones : availableZones
+          return {
+            method: p.method,
+            zones: p.zones.length > 0 ? p.zones : defaultZonesForMethod,
+            max_retries: p.max_retries,
+            retry_interval: p.retry_interval,
+            name_prefix: p.namePrefix || '',
+            flex_max_wait_hours: p.flexMaxWaitHours || 168,
+            flex_usage_duration_hours: p.flexUsageDurationHours || 24,
+            calendar_start_time: p.calendarStartTime || '',
+            calendar_end_time: p.calendarEndTime || '',
+          }
+        }),
         dwsCalendarDurationHours: 24,
         parallel: executionMode === 'parallel',
         network: selectedNetwork || '',
@@ -526,6 +531,9 @@ export default function ScanningPanel({ machineTypes = [], loading: mtLoading, p
             {priorities.map((priority, index) => {
               const methodInfo = METHOD_OPTIONS.find(m => m.value === priority.method)
               const isSupported = selectedMachineInfo?.supported?.[priority.method] !== false
+              const priorityZones = (
+                priority.method === 'dws_calendar' && !showUnsupported && selectedMachineInfo?.calendarZones?.length > 0
+              ) ? selectedMachineInfo.calendarZones : availableZones
 
               return (
                 <Card key={index} sx={{ mb: 2, border: `1px solid ${isSupported ? '#dadce0' : '#fce8e6'}`, bgcolor: isSupported ? '#fff' : '#fef7f7' }}>
@@ -581,7 +589,7 @@ export default function ScanningPanel({ machineTypes = [], loading: mtLoading, p
                             input={<OutlinedInput label="Zones" />}
                             renderValue={(selected) => selected.length === 0 ? 'All available' : `${selected.length} zones`}
                             disabled={!machineType || scanning}>
-                            {availableZones.map(zone => (
+                            {priorityZones.map(zone => (
                               <MenuItem key={zone} value={zone} dense>
                                 <Checkbox checked={priority.zones.indexOf(zone) > -1} size="small" />
                                 <ListItemText primary={zone} primaryTypographyProps={{ fontSize: '0.8rem' }} />
@@ -667,9 +675,9 @@ export default function ScanningPanel({ machineTypes = [], loading: mtLoading, p
                           <Grid item xs={6}>
                             <TextField fullWidth type="number" label="Usage Duration (hrs)"
                               value={priority.flexUsageDurationHours || 24}
-                              onChange={(e) => updatePriority(index, 'flexUsageDurationHours', Math.max(1, Math.min(720, parseInt(e.target.value) || 24)))}
-                              size="small" inputProps={{ min: 1, max: 720 }} disabled={scanning}
-                              helperText="How long you need the GPUs" />
+                              onChange={(e) => updatePriority(index, 'flexUsageDurationHours', Math.max(1, Math.min(168, parseInt(e.target.value) || 24)))}
+                              size="small" inputProps={{ min: 1, max: 168 }} disabled={scanning}
+                              helperText="How long you need the GPUs/TPUs (max 7d)" />
                           </Grid>
                         </Grid>
                       </Box>

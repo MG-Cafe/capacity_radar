@@ -14,7 +14,14 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from gpu_data import get_all_machine_types_info, get_zones_for_machine_type, MACHINE_TYPES, get_chip_groups, TPU_TYPES
+from gpu_data import (
+    get_all_machine_types_info,
+    get_zones_for_machine_type,
+    get_calendar_zones_for_machine_type,
+    MACHINE_TYPES,
+    get_chip_groups,
+    TPU_TYPES,
+)
 from advisory import get_calendar_advisory, get_spot_advisory, find_best_splits, get_flex_advisory
 from hunter import (
     create_session, cancel_session, get_session,
@@ -24,10 +31,27 @@ from hunter import (
 
 
 import os as _os
+import shutil as _shutil
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def _resolve_gcloud_bin() -> str:
+    """Resolve the gcloud binary path across standard installs and Google cloudtops."""
+    found = _shutil.which("gcloud")
+    if found:
+        return found
+    for candidate in (
+        "/google/data/ro/teams/cloud-sdk/gcloud",
+        "/usr/bin/gcloud",
+        "/usr/local/bin/gcloud",
+        "/usr/lib/google-cloud-sdk/bin/gcloud",
+    ):
+        if _os.path.exists(candidate):
+            return candidate
+    return "gcloud"
 
 # Cloud Run / Demo mode configuration
 DEMO_MODE = _os.environ.get("DEMO_MODE", "false").lower() in ("true", "1", "yes")
@@ -227,19 +251,39 @@ async def check_auth(request: Request, body: dict = None):
             creds.refresh(google.auth.transport.requests.Request())
             token = creds.token
             result["authenticated"] = True
+            if default_project:
+                result["defaultProject"] = default_project
+            else:
+                try:
+                    gcloud_bin = _resolve_gcloud_bin()
+                    proc_proj = await asyncio.create_subprocess_exec(
+                        gcloud_bin, "config", "get-value", "project",
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                    )
+                    stdout_proj, _ = await asyncio.wait_for(proc_proj.communicate(), timeout=5)
+                    proj_val = stdout_proj.decode().strip() if proc_proj.returncode == 0 else ""
+                    if proj_val and proj_val != "(unset)":
+                        result["defaultProject"] = proj_val
+                except Exception:
+                    pass
 
-            # Get account info
+            # Get account info (best-effort; never fail auth if gcloud CLI is unavailable)
             account = getattr(creds, 'service_account_email', None)
             if not account:
-                # For user credentials, get account from gcloud
-                proc = await asyncio.create_subprocess_exec(
-                    "gcloud", "config", "get-value", "account",
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-                stdout, _ = await proc.communicate()
-                account = stdout.decode().strip() if proc.returncode == 0 else "Unknown"
-            result["account"] = account
+                try:
+                    gcloud_bin = _resolve_gcloud_bin()
+                    proc = await asyncio.create_subprocess_exec(
+                        gcloud_bin, "config", "get-value", "account",
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                    )
+                    stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
+                    if proc.returncode == 0 and stdout.decode().strip():
+                        account = stdout.decode().strip()
+                except Exception:
+                    pass
+            result["account"] = account or "Google Cloud ADC"
 
         except Exception as e:
             error = str(e)
@@ -296,8 +340,9 @@ async def trigger_login():
         }
     try:
         # Use application-default login which sets up ADC with proper OAuth client
+        gcloud_bin = _resolve_gcloud_bin()
         proc = await asyncio.create_subprocess_exec(
-            "gcloud", "auth", "application-default", "login", "--launch-browser",
+            gcloud_bin, "auth", "application-default", "login", "--launch-browser",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -329,8 +374,14 @@ async def list_zones_for_machine_type(machine_type: str):
     zones = get_zones_for_machine_type(machine_type)
     if not zones:
         raise HTTPException(status_code=404, detail=f"Machine type '{machine_type}' not found")
+    cal_zones = get_calendar_zones_for_machine_type(machine_type)
     regions = sorted(set(z.rsplit("-", 1)[0] for z in zones))
-    return {"machineType": machine_type, "zones": zones, "regions": regions}
+    return {
+        "machineType": machine_type,
+        "zones": zones,
+        "calendarZones": cal_zones,
+        "regions": regions,
+    }
 
 
 @app.get("/api/networks")
@@ -537,9 +588,12 @@ async def websocket_scan(websocket: WebSocket):
                     })
                     continue
 
-                # Validate request
+                # Validate request (supports both nested `config` and top-level fields)
                 try:
-                    scan_req = ScanRequest(**message.get("config", {}))
+                    raw_cfg = message.get("config") or {
+                        k: v for k, v in message.items() if k not in ("action", "userToken")
+                    }
+                    scan_req = ScanRequest(**raw_cfg)
                 except Exception as e:
                     await websocket.send_json({
                         "type": "error",
@@ -590,6 +644,9 @@ async def websocket_scan(websocket: WebSocket):
                     user_token=user_token,
                     network=scan_req.network or None,
                     subnetwork=scan_req.subnetwork or None,
+                    min_vm_count=scan_req.minVmCount,
+                    max_vm_count=scan_req.maxVmCount,
+                    total_hunting_hours=scan_req.totalHuntingHours,
                 )
 
 

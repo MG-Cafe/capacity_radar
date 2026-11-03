@@ -85,6 +85,23 @@ export default function App() {
           account: 'Cloud Run Service Account',
         })
         setLoginSuccess(true)
+      } else if ((config.authMode || 'local') === 'local') {
+        // Auto-detect existing local ADC credentials on startup
+        fetch('/api/auth/check', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ project: '' }),
+        })
+          .then(r => r.json())
+          .then(authData => {
+            if (authData?.authenticated) {
+              setLoginSuccess(true)
+              if (authData.defaultProject) {
+                setProjectInput(authData.defaultProject)
+              }
+            }
+          })
+          .catch(() => {})
       }
     })
   }, [])

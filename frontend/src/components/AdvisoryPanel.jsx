@@ -316,7 +316,7 @@ export default function AdvisoryPanel({ machineTypes = [], loading: mtLoading, p
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
               <CalendarMonthIcon sx={{ color: '#1a73e8', fontSize: 22 }} />
               <Typography variant="h4">DWS Calendar Advisory</Typography>
-              <Tooltip title="Shows recommended zones and time windows for DWS Calendar mode reservations. Supported for A3, A4, and TPU families.">
+              <Tooltip title="Shows recommended zones and time windows for DWS Calendar mode reservations. Supported for A4X, A4, A3 Ultra/Mega/High, and TPU v6e/v5p/v5e.">
                 <InfoOutlinedIcon sx={{ fontSize: 16, color: '#80868b', cursor: 'help' }} />
               </Tooltip>
               {anyLoading && <CircularProgress size={18} sx={{ ml: 'auto' }} />}
@@ -324,7 +324,7 @@ export default function AdvisoryPanel({ machineTypes = [], loading: mtLoading, p
 
             {!selectedMachineInfo?.supported?.dws_calendar && machineType && (
               <Alert severity="info" sx={{ mb: 2 }}>
-                DWS Calendar mode is not supported for {machineType}. Only available for A4, A3, and TPU types.
+                DWS Calendar mode is not supported for {machineType}. Only available for A4X, A4, A3 Ultra/Mega/High, and TPU v6e/v5p/v5e.
               </Alert>
             )}
 
@@ -432,9 +432,10 @@ export default function AdvisoryPanel({ machineTypes = [], loading: mtLoading, p
             {/* Find Best Plan results */}
             {splitsResults && (
               <>
-                {splitsResults.tpuInfo ? (
+                {splitsResults.tpuInfo && (
                   <TpuInfoAlert info={splitsResults.tpuInfo} message={splitsResults.message} />
-                ) : (
+                )}
+                {(splitsResults.splits || []).length > 0 && (
                   <>
                     <Alert severity="info" sx={{ mb: 2 }}>
                       <AlertTitle>Capacity Plan</AlertTitle>
@@ -746,7 +747,13 @@ function CalendarRecsTable({ recommendations, showUnsupported }) {
                     sx={{ height: 22, fontSize: '0.65rem' }} />
                 </TableCell>
                 <TableCell sx={{ fontSize: '0.75rem', color: '#5f6368' }}>
-                  {rec.details || (rec.status === 'RECOMMENDED' ? 'Capacity available' : '—')}
+                  {rec.details || (
+                    rec.status === 'RECOMMENDED'
+                      ? (rec.startTime && rec.endTime
+                          ? `Available: ${new Date(rec.startTime).toLocaleDateString()} – ${new Date(rec.endTime).toLocaleDateString()}`
+                          : 'Capacity available')
+                      : '—'
+                  )}
                 </TableCell>
               </TableRow>
             ))}
@@ -815,9 +822,9 @@ function ErrorsCollapse({ errors, show, setShow }) {
 
 function AvailabilityChip({ availability }) {
   const avail = (availability || '').toUpperCase()
-  if (avail.includes('HIGH') || avail === 'AVAILABLE') return <Chip label={availability} size="small" color="success" sx={{ height: 22, fontSize: '0.65rem' }} />
+  if (avail.includes('HIGH') || avail === 'AVAILABLE' || avail === 'SUPPORTED') return <Chip label={availability} size="small" color="success" sx={{ height: 22, fontSize: '0.65rem' }} />
   if (avail.includes('MEDIUM') || avail.includes('MODERATE')) return <Chip label={availability} size="small" color="warning" sx={{ height: 22, fontSize: '0.65rem' }} />
-  if (avail.includes('LOW') || avail === 'UNAVAILABLE') return <Chip label={availability} size="small" color="error" sx={{ height: 22, fontSize: '0.65rem' }} />
+  if (avail.includes('LOW') || avail === 'UNAVAILABLE' || avail === 'NOT_SUPPORTED' || avail === 'NONE') return <Chip label={availability} size="small" color="error" sx={{ height: 22, fontSize: '0.65rem' }} />
   return <Chip label={availability || 'UNKNOWN'} size="small" sx={{ height: 22, fontSize: '0.65rem' }} />
 }
 

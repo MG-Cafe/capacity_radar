@@ -176,12 +176,19 @@ def cmd_catalog_chips(args):
 
 
 def cmd_catalog_zones(args):
-    from gpu_data import get_zones_for_machine_type
+    from gpu_data import get_zones_for_machine_type, get_calendar_zones_for_machine_type
     zones = get_zones_for_machine_type(args.machine_type)
     if not zones:
         _err(f"Unknown machine type '{args.machine_type}'.")
+    cal_zones = get_calendar_zones_for_machine_type(args.machine_type)
     regions = sorted({z.rsplit("-", 1)[0] for z in zones})
-    _out({"ok": True, "machineType": args.machine_type, "zones": zones, "regions": regions})
+    _out({
+        "ok": True,
+        "machineType": args.machine_type,
+        "zones": zones,
+        "calendarZones": cal_zones,
+        "regions": regions,
+    })
 
 
 def cmd_catalog_networks(args):
@@ -283,7 +290,7 @@ def _parse_priority(spec: str) -> dict:
 
 def cmd_deploy(args):
     import hunter
-    from gpu_data import get_zones_for_machine_type
+    from gpu_data import get_zones_for_machine_type, get_calendar_zones_for_machine_type
 
     valid_methods = {"on_demand", "dws_calendar", "dws_flex", "spot"}
     priorities = []
@@ -292,8 +299,11 @@ def cmd_deploy(args):
         if p["method"] not in valid_methods:
             _err(f"Invalid method '{p['method']}'. Valid: {sorted(valid_methods)}")
         if not p["zones"]:
-            # Default to all supported zones for the machine type.
-            p["zones"] = get_zones_for_machine_type(args.machine_type)
+            # Default to calendar zones for dws_calendar if defined, else all supported zones.
+            if p["method"] == "dws_calendar":
+                p["zones"] = get_calendar_zones_for_machine_type(args.machine_type) or get_zones_for_machine_type(args.machine_type)
+            else:
+                p["zones"] = get_zones_for_machine_type(args.machine_type)
         if args.name_prefix:
             p["name_prefix"] = args.name_prefix
         if args.calendar_start:
