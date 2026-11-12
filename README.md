@@ -176,7 +176,7 @@ capacity_radar/
 | Backend | Python 3.10+, FastAPI, WebSocket, httpx |
 | Frontend | React 18, Material UI v5, Vite |
 | Auth | Google Application Default Credentials (ADC) |
-| APIs | Compute Engine REST API (v1), TPU API (v2), Spot Advisory (alpha) |
+| APIs | Compute Engine REST API (v1/beta), TPU API (v2), Spot Advisory (beta), Flex Start Advisory (alpha / Preview) |
 
 ### API Endpoints
 

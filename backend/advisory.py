@@ -665,14 +665,17 @@ async def get_spot_advisory(
 async def _query_spot_advisory_region(
     token: str, project: str, region: str, machine_type: str
 ) -> list[dict]:
-    """Query spot advisory using the Capacity Advisory API (alpha).
-    Endpoint: POST .../regions/{region}/advice/capacity
+    """Query spot advisory using the public Capacity Advisory API (beta).
+    Endpoint: POST .../compute/beta/projects/{project}/regions/{region}/advice/capacity
     """
     import httpx
     from gpu_data import MACHINE_TYPES
 
+    # Use /compute/beta/ rather than /compute/alpha/ (which requires project-level
+    # Alpha Access allow-listing and returns HTTP 403 on standard GCP projects)
+    # or /compute/v1/ (which currently rejects SPOT provisioningModel).
     url = (
-        f"https://compute.googleapis.com/compute/alpha/projects/{project}"
+        f"https://compute.googleapis.com/compute/beta/projects/{project}"
         f"/regions/{region}/advice/capacity"
     )
 
@@ -686,12 +689,16 @@ async def _query_spot_advisory_region(
             "provisioningModel": "SPOT",
         }
     }
-    # IMPORTANT: Only attach guestAccelerators for true guest-attached GPU families (N1 / T4).
+    selection_spec: dict = {
+        "machineTypes": [machine_type],
+    }
+    # IMPORTANT: Only attach guestAccelerators for true guest-attached GPU families (N1 / T4),
+    # and place it on InstanceSelection (not InstanceProperties, where GCE ignores it).
     # Built-in GPU families (G2, G4, A2, A3, A4, A4X) fail validation if guestAccelerators is set.
     machine_info = MACHINE_TYPES.get(machine_type, {})
     if machine_info.get("guest_attached_gpu") and machine_info.get("accelerator_type"):
         gpu_count = machine_info.get("gpu_count", 1)
-        instance_props["guestAccelerators"] = [{
+        selection_spec["guestAccelerators"] = [{
             "acceleratorType": machine_info["accelerator_type"],
             "acceleratorCount": gpu_count,
         }]
@@ -700,9 +707,7 @@ async def _query_spot_advisory_region(
         "distributionPolicy": {"targetShape": "ANY_SINGLE_ZONE"},
         "instanceFlexibilityPolicy": {
             "instanceSelections": {
-                "instance-selection-1": {
-                    "machineTypes": [machine_type],
-                }
+                "instance-selection-1": selection_spec,
             }
         },
         "instanceProperties": instance_props,
@@ -720,8 +725,13 @@ async def _query_spot_advisory_region(
                 for rec in data.get("recommendations", []):
                     scores = rec.get("scores", {})
                     obtainability = scores.get("obtainability", 0)
-                    uptime_score = scores.get("uptimeScore", 0)
+                    raw_uptime_score = scores.get("uptimeScore")
                     estimated_uptime = scores.get("estimatedUptime", "unknown")
+                    uptime_secs = (
+                        _parse_duration_seconds(estimated_uptime)
+                        if estimated_uptime != "unknown"
+                        else None
+                    )
 
                     if obtainability >= 0.8:
                         availability = "HIGH"
@@ -732,12 +742,29 @@ async def _query_spot_advisory_region(
                     else:
                         availability = "VERY_LOW"
 
-                    if uptime_score >= 0.8:
-                        preemption = "LOW"
-                    elif uptime_score >= 0.5:
-                        preemption = "MODERATE"
+                    # The public /compute/beta/ endpoint returns estimatedUptime
+                    # (e.g. "3600s", "600s", "60s") and omits alpha-only uptimeScore.
+                    if raw_uptime_score is not None:
+                        uptime_score = raw_uptime_score
+                        if uptime_score >= 0.8:
+                            preemption = "LOW"
+                        elif uptime_score >= 0.5:
+                            preemption = "MODERATE"
+                        else:
+                            preemption = "HIGH"
+                    elif uptime_secs is not None:
+                        if uptime_secs >= 3600:
+                            preemption = "LOW"
+                            uptime_score = 0.9
+                        elif uptime_secs >= 600:
+                            preemption = "MODERATE"
+                            uptime_score = 0.6
+                        else:
+                            preemption = "HIGH"
+                            uptime_score = 0.1
                     else:
-                        preemption = "HIGH"
+                        uptime_score = None
+                        preemption = "UNKNOWN"
 
                     for shard in rec.get("shards", []):
                         zone_url = shard.get("zone", "")
@@ -929,11 +956,15 @@ async def _query_flex_advisory_region(
             "maxRunDuration": f"{max_run_secs}s",
         }
     }
-    # IMPORTANT: Only attach guestAccelerators for true guest-attached GPU families (N1 / T4).
+    selection_spec: dict = {
+        "machineTypes": [machine_type],
+    }
+    # IMPORTANT: Only attach guestAccelerators for true guest-attached GPU families (N1 / T4),
+    # and place it on InstanceSelection (not InstanceProperties, where GCE ignores it).
     machine_info = MACHINE_TYPES.get(machine_type, {})
     if machine_info.get("guest_attached_gpu") and machine_info.get("accelerator_type"):
         gpu_count = machine_info.get("gpu_count", 1)
-        instance_props["guestAccelerators"] = [{
+        selection_spec["guestAccelerators"] = [{
             "acceleratorType": machine_info["accelerator_type"],
             "acceleratorCount": gpu_count,
         }]
@@ -942,9 +973,7 @@ async def _query_flex_advisory_region(
         "instanceProperties": instance_props,
         "instanceFlexibilityPolicy": {
             "instanceSelections": {
-                "instance-selection-1": {
-                    "machineTypes": [machine_type],
-                }
+                "instance-selection-1": selection_spec,
             }
         },
         "distributionPolicy": {"targetShape": "ANY_SINGLE_ZONE"},
@@ -1012,6 +1041,21 @@ async def _query_flex_advisory_region(
                 raise RuntimeError(
                     f"{error_msg} (Flex Start Capacity Advisory is a Preview feature — "
                     f"your project may need to be whitelisted for this region.)"
+                )
+            elif resp.status_code == 403:
+                error_msg = resp.text
+                try:
+                    error_msg = resp.json().get("error", {}).get("message", resp.text)
+                except Exception:
+                    pass
+                if "Alpha Access" in error_msg:
+                    raise RuntimeError(
+                        f"{error_msg} (DWS Flex Start Capacity Advisory requires Compute Engine "
+                        f"Alpha API access and Preview project allow-listing; use Spot Advisory "
+                        f"or Scan & Deploy on non-allowlisted projects.)"
+                    )
+                raise RuntimeError(
+                    f"Flex Start Capacity Advisory API returned 403: {error_msg}"
                 )
             elif resp.status_code == 404:
                 raise RuntimeError(
