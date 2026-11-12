@@ -225,12 +225,13 @@ class TestCapacityRadarEndToEnd(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(len(splits_tpu["splits"]) > 0)
 
     async def test_05_advisory_spot_and_flex_guest_accelerators(self):
-        """Verify Spot and Flex Advisory only send guestAccelerators for N1 (T4), never G2 (L4)."""
+        """Verify Spot uses /compute/beta/, derives preemption from estimatedUptime, and places N1 guestAccelerators under instanceSelections."""
         captured_requests = []
+        mock_spot_payload = {"recommendations": []}
 
         async def mock_post(url, json=None, headers=None):
             captured_requests.append((url, json))
-            return MockResponse(200, {"recommendations": []})
+            return MockResponse(200, mock_spot_payload)
 
         mock_client = AsyncMock()
         mock_client.post.side_effect = mock_post
@@ -239,7 +240,7 @@ class TestCapacityRadarEndToEnd(unittest.IsolatedAsyncioTestCase):
 
         with patch("httpx.AsyncClient", return_value=mock_client), \
              patch.object(hunter.ScanningSession, "_log_deployment_event", MagicMock()):
-            # G2 (L4) Spot Advisory -> NO guestAccelerators
+            # G2 (L4) Spot Advisory -> /compute/beta/ + NO guestAccelerators anywhere
             captured_requests.clear()
             await advisory.get_spot_advisory(
                 project="test-proj",
@@ -247,23 +248,85 @@ class TestCapacityRadarEndToEnd(unittest.IsolatedAsyncioTestCase):
                 zones=["us-central1-a"],
                 user_token="fake-token",
             )
-            _, g2_spot_body = captured_requests[0]
+            g2_spot_url, g2_spot_body = captured_requests[0]
+            self.assertEqual(
+                g2_spot_url,
+                "https://compute.googleapis.com/compute/beta/projects/test-proj/regions/us-central1/advice/capacity",
+            )
             self.assertNotIn("guestAccelerators", g2_spot_body["instanceProperties"])
+            self.assertNotIn(
+                "guestAccelerators",
+                g2_spot_body["instanceFlexibilityPolicy"]["instanceSelections"]["instance-selection-1"],
+            )
 
-            # N1 (T4) Spot Advisory -> HAS guestAccelerators
+            # N1 (T4) Spot Advisory -> /compute/beta/ + guestAccelerators on InstanceSelection (NOT InstanceProperties)
             captured_requests.clear()
-            await advisory.get_spot_advisory(
+            mock_spot_payload = {
+                "recommendations": [
+                    {
+                        "scores": {"obtainability": 0.9, "estimatedUptime": "3600s"},
+                        "shards": [
+                            {
+                                "zone": "https://www.googleapis.com/compute/beta/projects/test-proj/zones/us-central1-f",
+                                "machineType": "n1-standard-4",
+                                "instanceCount": 1,
+                                "provisioningModel": "SPOT",
+                            }
+                        ],
+                    }
+                ]
+            }
+            n1_res = await advisory.get_spot_advisory(
                 project="test-proj",
                 machine_type="n1-standard-4",
-                zones=["us-central1-a"],
+                zones=["us-central1-f"],
                 user_token="fake-token",
             )
-            _, n1_spot_body = captured_requests[0]
-            self.assertIn("guestAccelerators", n1_spot_body["instanceProperties"])
+            n1_spot_url, n1_spot_body = captured_requests[0]
             self.assertEqual(
-                n1_spot_body["instanceProperties"]["guestAccelerators"][0]["acceleratorType"],
-                "nvidia-tesla-t4",
+                n1_spot_url,
+                "https://compute.googleapis.com/compute/beta/projects/test-proj/regions/us-central1/advice/capacity",
             )
+            self.assertNotIn("guestAccelerators", n1_spot_body["instanceProperties"])
+            n1_spot_sel = n1_spot_body["instanceFlexibilityPolicy"]["instanceSelections"]["instance-selection-1"]
+            self.assertEqual(
+                n1_spot_sel["guestAccelerators"],
+                [{"acceleratorType": "nvidia-tesla-t4", "acceleratorCount": 1}],
+            )
+            self.assertEqual(len(n1_res["recommendations"]), 1)
+            self.assertEqual(n1_res["recommendations"][0]["spotAvailability"], "HIGH")
+            self.assertEqual(n1_res["recommendations"][0]["preemptionRate"], "LOW")
+            self.assertEqual(n1_res["recommendations"][0]["estimatedUptime"], "3600s")
+            self.assertEqual(n1_res["recommendations"][0]["uptimeScore"], 0.9)
+
+            # Verify 600s -> MODERATE and 60s -> HIGH when alpha-only uptimeScore is omitted
+            for est_uptime, expected_preemption, expected_score in [
+                ("600s", "MODERATE", 0.6),
+                ("60s", "HIGH", 0.1),
+            ]:
+                mock_spot_payload = {
+                    "recommendations": [
+                        {
+                            "scores": {"obtainability": 0.5, "estimatedUptime": est_uptime},
+                            "shards": [
+                                {
+                                    "zone": "https://www.googleapis.com/compute/beta/projects/test-proj/zones/us-central1-a",
+                                    "machineType": "g4-standard-48",
+                                }
+                            ],
+                        }
+                    ]
+                }
+                g4_res = await advisory.get_spot_advisory(
+                    project="test-proj",
+                    machine_type="g4-standard-48",
+                    zones=["us-central1-a"],
+                    user_token="fake-token",
+                )
+                self.assertEqual(g4_res["recommendations"][0]["preemptionRate"], expected_preemption)
+                self.assertEqual(g4_res["recommendations"][0]["uptimeScore"], expected_score)
+
+            mock_spot_payload = {"recommendations": []}
 
             # G2 (L4) Flex Advisory -> NO guestAccelerators
             captured_requests.clear()
@@ -275,8 +338,12 @@ class TestCapacityRadarEndToEnd(unittest.IsolatedAsyncioTestCase):
             )
             _, g2_flex_body = captured_requests[0]
             self.assertNotIn("guestAccelerators", g2_flex_body["instanceProperties"])
+            self.assertNotIn(
+                "guestAccelerators",
+                g2_flex_body["instanceFlexibilityPolicy"]["instanceSelections"]["instance-selection-1"],
+            )
 
-            # N1 (T4) Flex Advisory -> HAS guestAccelerators
+            # N1 (T4) Flex Advisory -> guestAccelerators on InstanceSelection (NOT InstanceProperties)
             captured_requests.clear()
             await advisory.get_flex_advisory(
                 project="test-proj",
@@ -285,10 +352,11 @@ class TestCapacityRadarEndToEnd(unittest.IsolatedAsyncioTestCase):
                 user_token="fake-token",
             )
             _, n1_flex_body = captured_requests[0]
-            self.assertIn("guestAccelerators", n1_flex_body["instanceProperties"])
+            self.assertNotIn("guestAccelerators", n1_flex_body["instanceProperties"])
+            n1_flex_sel = n1_flex_body["instanceFlexibilityPolicy"]["instanceSelections"]["instance-selection-1"]
             self.assertEqual(
-                n1_flex_body["instanceProperties"]["guestAccelerators"][0]["acceleratorType"],
-                "nvidia-tesla-t4",
+                n1_flex_sel["guestAccelerators"],
+                [{"acceleratorType": "nvidia-tesla-t4", "acceleratorCount": 1}],
             )
 
     async def test_06_hunter_gpu_all_consumption_models(self):
